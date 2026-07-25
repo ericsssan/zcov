@@ -11,6 +11,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            // build_orchestrator.zig calls std.c.getpid() and zcov_format.zig
+            // uses fopen/fread. macOS links libc implicitly; Linux does not, so
+            // it must be explicit or the build fails on Linux.
+            .link_libc = true,
         }),
     });
     b.installArtifact(exe);
@@ -91,6 +95,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/integration_test.zig"),
             .target = target,
             .optimize = optimize,
+            // Uses std.c.getpid() and, via zcov_format.zig, fopen/fread — libc
+            // must be explicit for the Linux build (see the exe above).
+            .link_libc = true,
         }),
     });
     itest_exe.root_module.addOptions("build_options", itest_options);
