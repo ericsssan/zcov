@@ -90,6 +90,17 @@ pub fn run(opts: Options) OrchestratorError!RunResult {
     var child_env = try buildChildEnv(allocator, opts.parent_environ, zcov_dir);
     defer child_env.deinit();
 
+    // Force the project's `zig build test` to actually recompile AND re-run the
+    // instrumented binary by giving it a throwaway local cache. Zig caches the
+    // test *run*; with a warm cache it is skipped and no coverage-<pid>.zcov is
+    // written (ZIG_COV_DIR is not part of Zig's cache key), so a second
+    // `zig-cov test` would otherwise report "no .zcov files found". Fresh per
+    // invocation under our temp dir. ZIG_GLOBAL_CACHE_DIR is left inherited so
+    // the std library and dependencies stay cached.
+    const proj_cache = try std.fs.path.join(allocator, &.{ zcov_dir, "cache" });
+    defer allocator.free(proj_cache);
+    try child_env.put("ZIG_LOCAL_CACHE_DIR", proj_cache);
+
     // Run the build.
     std.debug.print("zig-cov: running: {any}\n", .{argv.items});
     const result = std.process.run(allocator, io, .{
