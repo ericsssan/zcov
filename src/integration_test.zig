@@ -230,6 +230,7 @@ fn runSampleWithCoverage(
     while (it.next()) |entry| try env.put(entry.key_ptr.*, entry.value_ptr.*);
     try env.put("ZIG_COV_DIR", zcov_dir);
     try env.put("ZIG_LOCAL_CACHE_DIR", sample_cache);
+    try env.put("ZIG_COV_DEBUG", "1");
 
     // build_options.rt_lib_path is relative to the build root (this process's cwd).
     // The sample build below runs from a different cwd (test/sample), so resolve
@@ -242,7 +243,7 @@ fn runSampleWithCoverage(
     std.debug.print("running: {s} build test -Dcoverage=true {s}\n", .{ build_options.zig_exe, rt_arg });
 
     const result = std.process.run(gpa, io, .{
-        .argv = &.{ build_options.zig_exe, "build", "test", "-Dcoverage=true", rt_arg },
+        .argv = &.{ build_options.zig_exe, "build", "test", "--summary", "all", "-Dcoverage=true", rt_arg },
         .cwd = .{ .path = build_options.sample_dir },
         .environ_map = &env,
     }) catch |e| {

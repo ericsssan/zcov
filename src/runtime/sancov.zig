@@ -119,6 +119,9 @@ export fn __sanitizer_cov_trace_pc_guard(guard: *u32) callconv(.c) void {
 // ---------------------------------------------------------------------------
 
 fn writeCoverageOnExit() callconv(.c) void {
+    if (std.c.getenv("ZIG_COV_DEBUG") != null) {
+        std.debug.print("zig-cov[debug]: exit handler fired; hit_count={d}\n", .{hit_count.load(.monotonic)});
+    }
     writeCoverage() catch |err| {
         std.debug.print("zig-cov: failed to write coverage: {}\n", .{err});
     };
@@ -159,6 +162,10 @@ fn writeCoverage() !void {
         std.debug.print("zig-cov: path too long: {}\n", .{e});
         return;
     };
+
+    if (std.c.getenv("ZIG_COV_DEBUG") != null) {
+        std.debug.print("zig-cov[debug]: writing {d} PCs to {s} (ZIG_COV_DIR={s})\n", .{ valid, path, out_dir });
+    }
 
     try zcov.write(path, slide, bin_path, hit_pcs[0..valid]);
 }
