@@ -76,11 +76,14 @@ const rt_path  = b.option([]const u8, "coverage-rt", "zig-cov-rt path") orelse n
 
 if (coverage) {
     unit_tests.sanitize_coverage_trace_pc_guard = true;
+    unit_tests.root_module.link_libc = true; // required (see note below)
     if (rt_path) |p| unit_tests.root_module.addObjectFile(.{ .cwd_relative = p });
 }
 ```
 
 That's the only change needed. zig-cov passes the flags automatically when you use `zig-cov test`.
+
+> **Why `link_libc`?** The runtime writes the `.zcov` file from a libc `atexit` handler (and uses `fopen`). If the test binary does not link libc, `std.process.exit` exits via a raw syscall on Linux and the handler never runs, so no coverage is produced. macOS always links libc, so it works there either way — but set `link_libc` for portability.
 
 ## Usage
 

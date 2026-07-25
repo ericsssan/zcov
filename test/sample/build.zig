@@ -14,6 +14,11 @@ pub fn build(b: *std.Build) void {
 
     if (coverage) {
         unit_tests.sanitize_coverage_trace_pc_guard = true;
+        // Required: the runtime uses libc (fopen) and writes coverage from a libc
+        // atexit handler. Without link_libc, builtin.link_libc is false and
+        // std.process.exit() takes the raw-syscall path on Linux, so the atexit
+        // handler never runs and no .zcov is written. (macOS always links libc.)
+        unit_tests.root_module.link_libc = true;
         if (rt_path) |p| unit_tests.root_module.addObjectFile(.{ .cwd_relative = p });
     }
 
