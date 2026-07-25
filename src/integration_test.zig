@@ -52,6 +52,20 @@ pub fn main(init: std.process.Init) !void {
         gpa.free(zcov_files);
     }
 
+    if (zcov_files.len == 0) {
+        std.debug.print("diagnostic: no .zcov in {s}; directory contents:\n", .{zcov_dir});
+        if (std.Io.Dir.openDirAbsolute(io, zcov_dir, .{ .iterate = true })) |dir_val| {
+            var d = dir_val;
+            defer d.close(io);
+            var dit = d.iterate();
+            var any = false;
+            while (dit.next(io) catch null) |entry| {
+                std.debug.print("  - {s}\n", .{entry.name});
+                any = true;
+            }
+            if (!any) std.debug.print("  (empty)\n", .{});
+        } else |e| std.debug.print("  (could not open dir: {})\n", .{e});
+    }
     check(zcov_files.len > 0, "no .zcov files produced — is ZIG_COV_DIR being picked up?");
     step += 1;
     std.debug.print("PASS [{d}] {d} .zcov file(s) produced\n", .{ step, zcov_files.len });
@@ -227,16 +241,24 @@ fn runSampleWithCoverage(
 
     std.debug.print("running: {s} build test -Dcoverage=true {s}\n", .{ build_options.zig_exe, rt_arg });
 
-    const result = try std.process.run(gpa, io, .{
+    const result = std.process.run(gpa, io, .{
         .argv = &.{ build_options.zig_exe, "build", "test", "-Dcoverage=true", rt_arg },
         .cwd = .{ .path = build_options.sample_dir },
         .environ_map = &env,
-    });
+    }) catch |e| {
+        std.debug.print(
+            "sample build failed to spawn: {}\n  zig_exe={s}\n  sample_dir={s}\n  ZIG_LOCAL_CACHE_DIR={s}\n",
+            .{ e, build_options.zig_exe, build_options.sample_dir, sample_cache },
+        );
+        return e;
+    };
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
 
-    if (result.stderr.len > 0) std.debug.print("{s}", .{result.stderr});
-    if (result.stdout.len > 0) std.debug.print("{s}", .{result.stdout});
+    // Always echo the sample build's output — on CI it is the only window into
+    // why coverage may not have been produced.
+    if (result.stderr.len > 0) std.debug.print("[sample stderr]\n{s}\n", .{result.stderr});
+    if (result.stdout.len > 0) std.debug.print("[sample stdout]\n{s}\n", .{result.stdout});
 
     switch (result.term) {
         .exited => |code| if (code != 0) fail("sample build exited with non-zero code"),

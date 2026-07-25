@@ -31,6 +31,12 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0-dev.657+2faf8debf
+          # Disable cross-run caching: the integration test bakes ephemeral
+          # per-run paths (e.g. the zig executable path) into a compiled binary,
+          # and restoring a stale .zig-cache across runs makes those paths point
+          # at directories that no longer exist. The project is tiny, so building
+          # fresh each run costs little and removes a class of CI heisenbugs.
+          use-cache: false
 
       - name: Build
         run: zig build
