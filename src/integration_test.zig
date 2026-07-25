@@ -246,7 +246,7 @@ fn runSampleWithCoverage(
     std.debug.print("running: {s} build test -Dcoverage=true {s}\n", .{ build_options.zig_exe, rt_arg });
 
     const result = std.process.run(gpa, io, .{
-        .argv = &.{ build_options.zig_exe, "build", "test", "--summary", "all", "-Dcoverage=true", rt_arg },
+        .argv = &.{ build_options.zig_exe, "build", "test", "-Dcoverage=true", rt_arg },
         .cwd = .{ .path = build_options.sample_dir },
         .environ_map = &env,
     }) catch |e| {
