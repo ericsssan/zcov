@@ -100,7 +100,10 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("PASS [{d}] {d} PCs resolved through DWARF\n", .{ step, total_pcs });
 
     // Step 4: find math.zig in the coverage map.
-    const math_key = findFile(&builder, "math.zig") orelse {
+    // Match the sample's src/math.zig specifically. With the LLVM backend the
+    // Zig std library is instrumented too, so a bare "math.zig" suffix would also
+    // match lib/std/math.zig; "src/math.zig" discriminates the sample's file.
+    const math_key = findFile(&builder, "src/math.zig") orelse {
         fail("no coverage data for math.zig — DWARF resolution produced wrong file names");
     };
     step += 1;
@@ -172,7 +175,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    const merged_key = findFile(&merged, "math.zig") orelse { fail("math.zig absent from merged coverage"); };
+    const merged_key = findFile(&merged, "src/math.zig") orelse { fail("math.zig absent from merged coverage"); };
     const merged_map = merged.file_map.get(merged_key).?;
     const merged_add = merged_map.get(LINE_ADD) orelse { fail("add absent after merge"); };
     const merged_mul = merged_map.get(LINE_MULTIPLY) orelse { fail("multiply absent after merge"); };
