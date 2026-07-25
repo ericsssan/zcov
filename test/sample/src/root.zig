@@ -10,3 +10,9 @@ test "add" {
 test "multiply" {
     try std.testing.expectEqual(@as(i32, 6), math.multiply(2, 3));
 }
+
+// Force `subtract` to be compiled (referenced) without calling it, so its
+// body is a coverable-but-unhit MISS rather than dead-code-eliminated.
+comptime {
+    _ = &math.subtract;
+}

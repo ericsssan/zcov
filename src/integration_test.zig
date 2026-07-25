@@ -6,9 +6,10 @@
 //!   3. Line coverage is accurate: executed lines hit, unexecuted lines absent.
 //!
 //! The sample project under test/sample/ has three functions:
-//!   add(a, b)      — tested  → math.zig line 2 must be HIT
-//!   subtract(a, b) — untested → math.zig line 6 must be ABSENT
-//!   multiply(a, b) — tested  → math.zig line 10 must be HIT
+//!   add(a, b)      — tested            → math.zig line 2 HIT
+//!   subtract(a, b) — compiled, untested → math.zig line 6 NOT hit, but a MISS
+//!                                         (coverable) once analyze() enumerates it
+//!   multiply(a, b) — tested            → math.zig line 10 HIT
 //!
 //! Run with: zig build itest
 
@@ -183,6 +184,38 @@ pub fn main(init: std.process.Init) !void {
     check(merged_mul >= 2, "multiply hit count must be >= 2 after two runs");
     step += 1;
     std.debug.print("PASS [{d}] merged hit counts >= 2 after two runs (add={d}, multiply={d})\n", .{ step, merged_add, merged_mul });
+
+    // Step 10: coverable-line enumeration (resolver.analyze). subtract() is
+    // compiled but never called, so analyze() must surface LINE_SUBTRACT as a
+    // MISS (coverable, hit_count 0) — not absent — while add/multiply are hits.
+    var cov = coverage_mod.Builder.init(gpa);
+    defer cov.deinit();
+    {
+        var d = try zcov_format.read(gpa, io, all_zcov[0]);
+        defer d.deinit();
+        var analysis = try resolver.analyze(gpa, io, d.bin_path, d.slide, d.pcs);
+        defer analysis.deinit();
+        for (analysis.coverable) |loc| {
+            if (loc.line == 0) continue;
+            try cov.recordCoverable(loc.file, loc.line);
+        }
+        for (analysis.hits) |loc| {
+            if (loc.line == 0) continue;
+            try cov.recordHit(loc.file, loc.line);
+        }
+    }
+    const cov_key = findFile(&cov, "src/math.zig") orelse { fail("math.zig absent from analyze coverage"); };
+    const cov_map = cov.file_map.get(cov_key).?;
+    const cov_sub = cov_map.get(LINE_SUBTRACT) orelse {
+        fail("subtract must be a coverable MISS, but is absent — coverable enumeration failed");
+    };
+    check(cov_sub == 0, "subtract must be a miss (coverable, hit_count 0)");
+    const cov_add = cov_map.get(LINE_ADD) orelse { fail("add absent from analyze coverage"); };
+    const cov_mul = cov_map.get(LINE_MULTIPLY) orelse { fail("multiply absent from analyze coverage"); };
+    check(cov_add >= 1, "add must be hit in analyze coverage");
+    check(cov_mul >= 1, "multiply must be hit in analyze coverage");
+    step += 1;
+    std.debug.print("PASS [{d}] analyze() enumerates coverable lines: subtract is a MISS, add={d}, multiply={d}\n", .{ step, cov_add, cov_mul });
 
     std.debug.print("=== all {d} integration tests passed ===\n", .{step});
 }

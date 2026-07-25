@@ -294,23 +294,23 @@ fn processZcovFile(
 
     std.debug.print("zig-cov: resolving {d} PCs from {s}...\n", .{ data.pcs.len, data.bin_path });
 
-    const locations = try resolver.resolveAddresses(
+    var analysis = try resolver.analyze(
         gpa,
         io,
         data.bin_path,
         data.slide,
         data.pcs,
     );
-    defer {
-        for (locations) |loc| {
-            if (!std.mem.eql(u8, loc.file, "<unknown>")) {
-                gpa.free(loc.file);
-            }
-        }
-        gpa.free(locations);
-    }
+    defer analysis.deinit();
 
-    for (locations) |loc| {
+    // Coverable lines first (establish misses), then hits (upgrade to executed).
+    // Order does not matter — recordCoverable never lowers a count — but doing
+    // coverable first keeps intent clear.
+    for (analysis.coverable) |loc| {
+        if (loc.line == 0) continue;
+        try builder.recordCoverable(loc.file, loc.line);
+    }
+    for (analysis.hits) |loc| {
         if (loc.line == 0) continue; // unknown location
         try builder.recordHit(loc.file, loc.line);
     }
