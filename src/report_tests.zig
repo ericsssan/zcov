@@ -11,6 +11,7 @@ const std = @import("std");
 const coverage = @import("coverage.zig");
 const lcov = @import("report/lcov.zig");
 const summary = @import("report/summary.zig");
+const html = @import("report/html.zig");
 
 // Empty CoverageData used by the anchor tests below.
 fn emptyData(alloc: std.mem.Allocator) coverage.CoverageData {
@@ -41,4 +42,11 @@ test "anchor: summary.write is reachable" {
     defer buf.deinit();
     const data = emptyData(std.testing.allocator);
     _ = try summary.write(&buf.writer, &data, .{ .color = false });
+}
+
+// html.write needs an Io to read source files; referencing it (without calling)
+// pulls report/html.zig into the module graph so the test runner discovers its
+// (I/O-free) test blocks.
+test "anchor: report/html is reachable" {
+    _ = &html.write;
 }

@@ -6,9 +6,9 @@
 //!   zig-cov --help
 //!
 //! Options:
-//!   --format=lcov|summary     Output format (default: summary)
+//!   --format=summary|lcov|html  Output format (default: summary)
 //!   --output=<path>           Output file path (default: stdout for summary,
-//!                             coverage.lcov for lcov)
+//!                             coverage.html for html)
 //!   --fail-under=<pct>        Exit 1 if line coverage is below this %
 //!   --color=on|off|auto       Terminal color (default: auto)
 //!   --project=<dir>           Project directory containing build.zig
@@ -22,6 +22,7 @@ const coverage = @import("coverage.zig");
 const resolver = @import("dwarf/resolver.zig");
 const lcov_report = @import("report/lcov.zig");
 const summary_report = @import("report/summary.zig");
+const html_report = @import("report/html.zig");
 const orchestrator = @import("build_orchestrator.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -72,8 +73,8 @@ fn printUsage() void {
         \\  report   Generate report from existing .zcov file(s)
         \\
         \\Options:
-        \\  --format=lcov|summary     Output format (default: summary)
-        \\  --output=<path>           Output file (default: stdout for summary)
+        \\  --format=summary|lcov|html  Output format (default: summary)
+        \\  --output=<path>           Output file (html defaults to coverage.html)
         \\  --fail-under=<pct>        Exit 1 if line coverage below threshold
         \\  --color=on|off|auto       Terminal color (default: auto)
         \\  --project=<dir>           Project directory (default: .)
@@ -94,7 +95,7 @@ fn printUsage() void {
 // Parsed options
 // ---------------------------------------------------------------------------
 
-const Format = enum { summary, lcov };
+const Format = enum { summary, lcov, html };
 
 const Opts = struct {
     format: Format = .summary,
@@ -132,6 +133,8 @@ fn parseOpts(gpa: std.mem.Allocator, raw_args: []const []const u8) !Opts {
                 opts.format = .lcov;
             } else if (std.mem.eql(u8, val, "summary")) {
                 opts.format = .summary;
+            } else if (std.mem.eql(u8, val, "html")) {
+                opts.format = .html;
             } else {
                 std.debug.print("zig-cov: unknown format '{s}'\n", .{val});
                 std.process.exit(1);
@@ -262,6 +265,18 @@ fn generateReport(
                 try lcov_report.write(stdout, &cov_data);
                 try stdout.flush();
             }
+        },
+        .html => {
+            // HTML is a file format; default to coverage.html in the cwd.
+            // cwd().createFile handles both relative and absolute paths.
+            const out_path = opts.output orelse "coverage.html";
+            var file = try std.Io.Dir.cwd().createFile(io, out_path, .{});
+            defer file.close(io);
+            var file_buf: [4096]u8 = undefined;
+            var file_fw = file.writer(io, &file_buf);
+            try html_report.write(gpa, io, &file_fw.interface, &cov_data);
+            try file_fw.interface.flush();
+            std.debug.print("zig-cov: wrote HTML report to {s}\n", .{out_path});
         },
     }
 }

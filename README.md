@@ -101,6 +101,9 @@ zig-cov test
 # LCOV format (for Codecov, Coveralls, lcov --genhtml, etc.)
 zig-cov test --format=lcov --output=coverage.lcov
 
+# Self-contained HTML report (source view with syntax highlighting)
+zig-cov test --format=html --output=coverage.html
+
 # Fail the build if coverage drops below a threshold
 zig-cov test --fail-under=80
 
@@ -119,8 +122,8 @@ zig-cov report --format=lcov *.zcov
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format=summary\|lcov` | `summary` | Output format |
-| `--output=<path>` | stdout | Output file (summary goes to stdout, lcov defaults to `coverage.lcov`) |
+| `--format=summary\|lcov\|html` | `summary` | Output format |
+| `--output=<path>` | stdout | Output file (summary goes to stdout; `html` defaults to `coverage.html`) |
 | `--fail-under=<pct>` | `0` | Exit 1 if line coverage is below this percentage |
 | `--color=on\|off\|auto` | `auto` | Terminal colour in summary output |
 | `--project=<dir>` | `.` | Directory containing `build.zig` |
@@ -190,7 +193,7 @@ src/
 
 ## Roadmap
 
-- [ ] HTML report with Zig syntax highlighting
+- [x] HTML report with Zig syntax highlighting
 - [ ] Windows support (PE/COFF)
 - [ ] Branch/expression coverage via LLVM profraw (`--precise` mode)
 - [ ] Cobertura XML and JSON output
