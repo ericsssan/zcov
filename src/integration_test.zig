@@ -197,21 +197,25 @@ fn runSampleWithCoverage(
     parent_env: *std.process.Environ.Map,
     zcov_dir: []const u8,
 ) !void {
-    // Force a cold build so `zig build test` actually recompiles AND re-runs the
-    // instrumented binary. With a warm Zig cache the test run is marked
-    // up-to-date and skipped, so no coverage-<pid>.zcov is written (ZIG_COV_DIR
-    // is invisible to Zig's cache key). .zig-cache is a disposable, gitignored
-    // build artifact, so removing it is safe.
-    const cache_dir = try std.fs.path.join(gpa, &.{ build_options.sample_dir, ".zig-cache" });
-    defer gpa.free(cache_dir);
-    std.Io.Dir.deleteTree(.cwd(), io, cache_dir) catch {};
+    // Give the sample build its OWN throwaway local cache dir so `zig build test`
+    // always recompiles AND re-runs the instrumented binary. With a warm cache the
+    // test run is marked up-to-date and skipped, so no coverage-<pid>.zcov is
+    // written (ZIG_COV_DIR is invisible to Zig's cache key). We can't just clear
+    // test/sample/.zig-cache: CI (via setup-zig) sets ZIG_LOCAL_CACHE_DIR to a
+    // shared, restored-across-runs cache, so the sample would cache there instead.
+    // Overriding ZIG_LOCAL_CACHE_DIR to a fresh per-run dir is location-independent.
+    // (ZIG_GLOBAL_CACHE_DIR is left inherited so the std lib stays cached — only
+    // the project's build+run manifests are forced cold.)
+    const sample_cache = try std.fs.path.join(gpa, &.{ zcov_dir, "sample-cache" });
+    defer gpa.free(sample_cache);
 
-    // Build child environment: copy parent + set ZIG_COV_DIR.
+    // Build child environment: copy parent + set ZIG_COV_DIR and the private cache.
     var env = std.process.Environ.Map.init(gpa);
     defer env.deinit();
     var it = parent_env.iterator();
     while (it.next()) |entry| try env.put(entry.key_ptr.*, entry.value_ptr.*);
     try env.put("ZIG_COV_DIR", zcov_dir);
+    try env.put("ZIG_LOCAL_CACHE_DIR", sample_cache);
 
     // build_options.rt_lib_path is relative to the build root (this process's cwd).
     // The sample build below runs from a different cwd (test/sample), so resolve
