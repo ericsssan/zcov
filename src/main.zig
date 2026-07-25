@@ -13,6 +13,9 @@
 //!   --color=on|off|auto       Terminal color (default: auto)
 //!   --project=<dir>           Project directory containing build.zig
 //!                             (default: current directory)
+//!   --include=<substr>        Only report files matching (repeatable;
+//!                             overrides the default project-dir filter)
+//!   --exclude=<substr>        Drop files matching (repeatable)
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -78,6 +81,12 @@ fn printUsage() void {
         \\  --fail-under=<pct>        Exit 1 if line coverage below threshold
         \\  --color=on|off|auto       Terminal color (default: auto)
         \\  --project=<dir>           Project directory (default: .)
+        \\  --include=<substr>        Only report files matching (repeatable;
+        \\                            overrides the default project-dir filter)
+        \\  --exclude=<substr>        Drop files matching (repeatable)
+        \\
+        \\By default only files under --project are reported (the Zig std library
+        \\and out-of-tree files are hidden). Pass --include=<substr> to override.
         \\
         \\Setup (add to your build.zig):
         \\  const coverage = b.option(bool, "coverage", "Enable zig-cov") orelse false;
@@ -103,17 +112,54 @@ const Opts = struct {
     fail_under: f64 = 0,
     color: bool = true,
     project: []const u8 = ".",
-    extra_args: std.ArrayList([]const u8),
+    /// Substrings; if any given, only files matching one are reported (replaces
+    /// the default "under the project directory" filter).
+    include: std.ArrayList([]const u8) = .empty,
+    /// Substrings; files matching any are dropped (applied after include).
+    exclude: std.ArrayList([]const u8) = .empty,
+    extra_args: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *Opts, gpa: std.mem.Allocator) void {
+        self.include.deinit(gpa);
+        self.exclude.deinit(gpa);
         self.extra_args.deinit(gpa);
     }
 };
 
+/// Decides which source files appear in the report.
+const PathFilter = struct {
+    /// Absolute path of the project directory. When no `include` is given, only
+    /// files under this prefix are kept (drops the Zig std library, global
+    /// cache, and other out-of-tree files). null = keep everything.
+    project_prefix: ?[]const u8,
+    include: []const []const u8,
+    exclude: []const []const u8,
+
+    fn accept(self: PathFilter, path: []const u8) bool {
+        for (self.exclude) |pat| {
+            if (std.mem.indexOf(u8, path, pat) != null) return false;
+        }
+        if (self.include.len > 0) {
+            for (self.include) |pat| {
+                if (std.mem.indexOf(u8, path, pat) != null) return true;
+            }
+            return false;
+        }
+        if (self.project_prefix) |prefix| {
+            // Relative paths come from DWARF relative to the build cwd (the
+            // project root), so they are project files — keep them. Only absolute
+            // paths (e.g. the Zig std library) are prefix-checked.
+            if (!std.fs.path.isAbsolute(path)) return true;
+            if (!std.mem.startsWith(u8, path, prefix)) return false;
+            // Match a directory boundary so /a/proj does not match /a/project2.
+            return path.len == prefix.len or path[prefix.len] == '/';
+        }
+        return true;
+    }
+};
+
 fn parseOpts(gpa: std.mem.Allocator, raw_args: []const []const u8) !Opts {
-    var opts = Opts{
-        .extra_args = .empty,
-    };
+    var opts = Opts{};
 
     var i: usize = 0;
     var after_dashdash = false;
@@ -153,6 +199,10 @@ fn parseOpts(gpa: std.mem.Allocator, raw_args: []const []const u8) !Opts {
             opts.color = false;
         } else if (std.mem.startsWith(u8, arg, "--project=")) {
             opts.project = arg["--project=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--include=")) {
+            try opts.include.append(gpa, arg["--include=".len..]);
+        } else if (std.mem.startsWith(u8, arg, "--exclude=")) {
+            try opts.exclude.append(gpa, arg["--exclude=".len..]);
         } else {
             try opts.extra_args.append(gpa, arg);
         }
@@ -224,8 +274,23 @@ fn generateReport(
     var builder = coverage.Builder.init(gpa);
     defer builder.deinit();
 
+    // Resolve the project directory to an absolute prefix for the default file
+    // filter (only used when no --include is given). Best-effort: if it can't be
+    // resolved, fall back to keeping everything.
+    const project_prefix: ?[:0]u8 = if (opts.include.items.len == 0)
+        (std.Io.Dir.cwd().realPathFileAlloc(io, opts.project, gpa) catch null)
+    else
+        null;
+    defer if (project_prefix) |p| gpa.free(p);
+
+    const filter = PathFilter{
+        .project_prefix = project_prefix,
+        .include = opts.include.items,
+        .exclude = opts.exclude.items,
+    };
+
     for (zcov_files) |zcov_path| {
-        processZcovFile(gpa, io, zcov_path, &builder) catch |err| {
+        processZcovFile(gpa, io, zcov_path, &builder, filter) catch |err| {
             std.debug.print("zig-cov: warning: failed to process '{s}': {}\n", .{ zcov_path, err });
         };
     }
@@ -234,7 +299,12 @@ fn generateReport(
     defer cov_data.deinit();
 
     if (cov_data.files.len == 0) {
-        std.debug.print("zig-cov: no coverage data could be resolved\n", .{});
+        const filtering = opts.include.items.len > 0 or opts.exclude.items.len > 0 or project_prefix != null;
+        if (filtering) {
+            std.debug.print("zig-cov: no files to report after filtering — adjust --include/--exclude/--project\n", .{});
+        } else {
+            std.debug.print("zig-cov: no coverage data could be resolved\n", .{});
+        }
         std.process.exit(1);
     }
 
@@ -286,6 +356,7 @@ fn processZcovFile(
     io: std.Io,
     zcov_path: []const u8,
     builder: *coverage.Builder,
+    filter: PathFilter,
 ) !void {
     var data = try zcov_format.read(gpa, io, zcov_path);
     defer data.deinit();
@@ -308,10 +379,12 @@ fn processZcovFile(
     // coverable first keeps intent clear.
     for (analysis.coverable) |loc| {
         if (loc.line == 0) continue;
+        if (!filter.accept(loc.file)) continue;
         try builder.recordCoverable(loc.file, loc.line);
     }
     for (analysis.hits) |loc| {
         if (loc.line == 0) continue; // unknown location
+        if (!filter.accept(loc.file)) continue;
         try builder.recordHit(loc.file, loc.line);
     }
 }
@@ -339,4 +412,44 @@ test "parse opts - extra args after --" {
     var opts = try parseOpts(alloc, &.{ "--", "-v", "--verbose" });
     defer opts.deinit(alloc);
     try std.testing.expectEqualStrings("-v", opts.extra_args.items[0]);
+}
+
+test "parse opts - include and exclude are repeatable" {
+    const alloc = std.testing.allocator;
+    var opts = try parseOpts(alloc, &.{ "--include=src/", "--include=lib/", "--exclude=/std/" });
+    defer opts.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 2), opts.include.items.len);
+    try std.testing.expectEqualStrings("src/", opts.include.items[0]);
+    try std.testing.expectEqualStrings("lib/", opts.include.items[1]);
+    try std.testing.expectEqual(@as(usize, 1), opts.exclude.items.len);
+    try std.testing.expectEqualStrings("/std/", opts.exclude.items[0]);
+}
+
+test "PathFilter default keeps only files under the project prefix" {
+    const f = PathFilter{ .project_prefix = "/home/u/proj", .include = &.{}, .exclude = &.{} };
+    try std.testing.expect(f.accept("/home/u/proj/src/main.zig"));
+    try std.testing.expect(f.accept("/home/u/proj")); // the dir itself
+    try std.testing.expect(!f.accept("/usr/lib/std/mem.zig")); // std lib dropped
+    try std.testing.expect(!f.accept("/home/u/proj2/x.zig")); // sibling, not under prefix
+    try std.testing.expect(f.accept("src/util.zig")); // relative = project-local
+    try std.testing.expect(f.accept("clap/args.zig")); // relative subdir
+}
+
+test "PathFilter include overrides the project prefix" {
+    const inc = [_][]const u8{"/std/"};
+    const f = PathFilter{ .project_prefix = "/home/u/proj", .include = &inc, .exclude = &.{} };
+    try std.testing.expect(f.accept("/usr/lib/std/mem.zig")); // matches an include
+    try std.testing.expect(!f.accept("/home/u/proj/src/main.zig")); // no include match
+}
+
+test "PathFilter exclude wins over include and prefix" {
+    const exc = [_][]const u8{"/generated/"};
+    const f = PathFilter{ .project_prefix = "/home/u/proj", .include = &.{}, .exclude = &exc };
+    try std.testing.expect(f.accept("/home/u/proj/src/main.zig"));
+    try std.testing.expect(!f.accept("/home/u/proj/generated/x.zig"));
+}
+
+test "PathFilter with no prefix and no rules keeps everything" {
+    const f = PathFilter{ .project_prefix = null, .include = &.{}, .exclude = &.{} };
+    try std.testing.expect(f.accept("/anything/goes.zig"));
 }

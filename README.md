@@ -127,6 +127,13 @@ zig-cov report --format=lcov *.zcov
 | `--fail-under=<pct>` | `0` | Exit 1 if line coverage is below this percentage |
 | `--color=on\|off\|auto` | `auto` | Terminal colour in summary output |
 | `--project=<dir>` | `.` | Directory containing `build.zig` |
+| `--include=<substr>` | — | Only report files matching (repeatable; overrides the default project-dir filter) |
+| `--exclude=<substr>` | — | Drop files matching (repeatable) |
+
+By default only files under `--project` are reported — the Zig standard library
+and other out-of-tree files are hidden. Relative source paths (project-local)
+are always kept. To report everything, pass an `--include` that matches (e.g.
+`--include=.zig`); to see the std library too, `--include=/std/`.
 
 ## .zcov file format
 
