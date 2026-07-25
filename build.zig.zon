@@ -2,6 +2,11 @@
     .name = .zig_cov,
     .fingerprint = 0x53616c3862b55df9,
     .version = "0.1.0",
-    .minimum_zig_version = "0.14.0",
+    // Floor for local builds (Zig only errors if the compiler is OLDER than this;
+    // there is no upper bound). The project uses in-flux std/build APIs, so in
+    // practice it wants this EXACT nightly — a newer one may not compile (see
+    // README). The hard pin used by CI is the explicit `version` in
+    // .github/workflows/ci.yml; keep the two in sync when bumping.
+    .minimum_zig_version = "0.17.0-dev.657+2faf8debf",
     .paths = .{"."},
 }

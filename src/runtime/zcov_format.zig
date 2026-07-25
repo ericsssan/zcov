@@ -171,3 +171,76 @@ test "zcov_format write returns error for bin_path exceeding u16 max" {
         write("/tmp/zcov-unit-toolong.zcov", 0, too_long, &.{}),
     );
 }
+
+test "zcov_format round-trip: read back matches what was written" {
+    const alloc = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const path: [:0]const u8 = "/tmp/zcov-unit-roundtrip.zcov";
+    const pcs_in = [_]u64{ 0xdeadbeef, 0xcafebabe, 0x12345678 };
+    const bin_in = "/usr/bin/mytest";
+    const slide_in: i64 = -4096;
+
+    try write(path, slide_in, bin_in, &pcs_in);
+
+    var data = try read(alloc, io, path);
+    defer data.deinit();
+
+    try std.testing.expectEqual(slide_in, data.slide);
+    try std.testing.expectEqualStrings(bin_in, data.bin_path);
+    try std.testing.expectEqual(@as(usize, 3), data.pcs.len);
+    try std.testing.expectEqual(pcs_in[0], data.pcs[0]);
+    try std.testing.expectEqual(pcs_in[1], data.pcs[1]);
+    try std.testing.expectEqual(pcs_in[2], data.pcs[2]);
+}
+
+test "zcov_format read rejects bad magic" {
+    const alloc = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const path: [:0]const u8 = "/tmp/zcov-unit-badmagic.zcov";
+
+    var hdr = Header{
+        .magic = .{ 'B', 'A', 'D', '!' },
+        .version = version,
+        .slide = 0,
+        .num_pcs = 0,
+        .bin_path_len = 0,
+    };
+    const f = fopen(path.ptr, "wb") orelse return error.TestFailed;
+    _ = fwrite(&hdr, @sizeOf(Header), 1, f);
+    _ = fclose(f);
+
+    try std.testing.expectError(error.InvalidMagic, read(alloc, io, path));
+}
+
+test "zcov_format read rejects unsupported version" {
+    const alloc = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const path: [:0]const u8 = "/tmp/zcov-unit-badver.zcov";
+
+    var hdr = Header{
+        .magic = magic,
+        .version = 999,
+        .slide = 0,
+        .num_pcs = 0,
+        .bin_path_len = 0,
+    };
+    const f = fopen(path.ptr, "wb") orelse return error.TestFailed;
+    _ = fwrite(&hdr, @sizeOf(Header), 1, f);
+    _ = fclose(f);
+
+    try std.testing.expectError(error.UnsupportedVersion, read(alloc, io, path));
+}
+
+test "zcov_format read returns EndOfStream on truncated file" {
+    const alloc = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const path: [:0]const u8 = "/tmp/zcov-unit-truncated.zcov";
+
+    // Write only 2 bytes — a full header requires @sizeOf(Header) bytes.
+    const f = fopen(path.ptr, "wb") orelse return error.TestFailed;
+    const short = [_]u8{ 'Z', 'C' };
+    _ = fwrite(&short, 1, short.len, f);
+    _ = fclose(f);
+
+    try std.testing.expectError(error.EndOfStream, read(alloc, io, path));
+}

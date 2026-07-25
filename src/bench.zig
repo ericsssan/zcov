@@ -27,7 +27,7 @@ const summary_report = @import("report/summary.zig");
 // ---------------------------------------------------------------------------
 
 /// Compact hit-PC list for sancov bench (mirrors the real runtime layout).
-var g_hit_pcs: [1 << 15]u64 = [_]u64{0} ** (1 << 15);
+var g_hit_pcs: [1 << 15]u64 = @splat(0);
 
 /// Atomic hit counter (mirrors hit_count in sancov.zig).
 var g_hit_count: std.atomic.Value(u32) = .init(0);

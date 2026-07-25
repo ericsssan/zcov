@@ -197,4 +197,4 @@ zig build test   # run unit tests
 zig build bench  # run performance benchmarks
 ```
 
-Requires Zig nightly (`0.16.0-dev` or later).
+Requires the pinned Zig nightly `0.17.0-dev.657+2faf8debf` (see `minimum_zig_version` in `build.zig.zon`). The project uses in-flux std/build APIs, so newer nightlies may not compile until the sources are updated.

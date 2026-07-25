@@ -46,7 +46,7 @@ const MAX_EDGE_IDS: usize = 1 << 20; // 1 048 576
 
 /// Compact list of PCs captured at runtime (one entry per executed edge).
 /// Slots are allocated atomically by __sanitizer_cov_trace_pc_guard.
-var hit_pcs: [MAX_EDGE_IDS]u64 = [_]u64{0} ** MAX_EDGE_IDS;
+var hit_pcs: [MAX_EDGE_IDS]u64 = @splat(0);
 
 /// Number of slots consumed so far. May exceed MAX_EDGE_IDS on overflow.
 var hit_count: std.atomic.Value(u32) = .init(0);
@@ -141,7 +141,7 @@ fn writeCoverage() !void {
     const slide = getAslrSlide();
 
     // Get an Io instance from the global single-threaded runtime.
-    const io = std.Io.Threaded.global_single_threaded.ioBasic();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
     // Get our own executable path.
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -155,7 +155,7 @@ fn writeCoverage() !void {
     // Build output file path: <dir>/coverage-<pid>.zcov (null-terminated for fopen)
     var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
     const pid = std.c.getpid();
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/coverage-{d}.zcov", .{ out_dir, pid }) catch |e| {
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/coverage-{d}.zcov", .{ out_dir, pid }, 0) catch |e| {
         std.debug.print("zig-cov: path too long: {}\n", .{e});
         return;
     };
@@ -170,7 +170,7 @@ fn getAslrSlide() i64 {
     // Use a known address in our own code as the "runtime address".
     // std.debug.SelfInfo can give us the corresponding virtual address.
     const runtime_addr: usize = @intFromPtr(&__sanitizer_cov_trace_pc_guard_init);
-    const io = std.Io.Threaded.global_single_threaded.ioBasic();
+    const io = std.Io.Threaded.global_single_threaded.io();
     const si = std.debug.getSelfDebugInfo() catch return 0;
     const slide = si.getModuleSlide(io, runtime_addr) catch return 0;
     return @intCast(slide);
@@ -203,7 +203,7 @@ test "guard_init assigns sequential IDs" {
 test "trace_pc_guard records PC and zeroes guard" {
     // Reset state
     hit_count.store(0, .monotonic);
-    hit_pcs = [_]u64{0} ** MAX_EDGE_IDS;
+    hit_pcs = @splat(0);
 
     var guard: u32 = 5; // pretend guard 5 was assigned
     __sanitizer_cov_trace_pc_guard(&guard);

@@ -109,6 +109,64 @@ pub fn main(init: std.process.Init) !void {
     step += 1;
     std.debug.print("PASS [{d}] math.zig:{d} (subtract) is correctly absent\n", .{ step, LINE_SUBTRACT });
 
+    // Step 6: hit counts must be positive (not just present).
+    const add_hits = line_map.get(LINE_ADD) orelse { fail("add absent — unreachable after step 4"); };
+    const mul_hits = line_map.get(LINE_MULTIPLY) orelse { fail("multiply absent — unreachable after step 5"); };
+    check(add_hits >= 1, "add hit count must be >= 1");
+    check(mul_hits >= 1, "multiply hit count must be >= 1");
+    step += 1;
+    std.debug.print("PASS [{d}] hit counts are positive (add={d}, multiply={d})\n", .{ step, add_hits, mul_hits });
+
+    // Step 7-8: multi-run merge + ASLR.
+    // Re-execute the instrumented test binary directly (its absolute path is
+    // recorded in the first run's .zcov). Going through `zig build test` again
+    // would hit Zig's build cache and not actually re-run the binary. A direct
+    // second run writes a new coverage-<pid>.zcov with a different PID and (on
+    // macOS) a different ASLR slide. After merging both .zcov files each
+    // function's hit count must be >= 2.
+    const first_bin = blk: {
+        var d0 = try zcov_format.read(gpa, io, zcov_files[0]);
+        defer d0.deinit();
+        break :blk try gpa.dupe(u8, d0.bin_path);
+    };
+    defer gpa.free(first_bin);
+    try runBinaryWithCoverage(gpa, io, init.environ_map, first_bin, zcov_dir);
+
+    const all_zcov = try collectZcovFiles(gpa, io, zcov_dir);
+    defer {
+        for (all_zcov) |f| gpa.free(f);
+        gpa.free(all_zcov);
+    }
+    check(all_zcov.len >= 2, "expected >= 2 .zcov files after two runs");
+    step += 1;
+    std.debug.print("PASS [{d}] {d} .zcov files produced across two runs\n", .{ step, all_zcov.len });
+
+    var merged = coverage_mod.Builder.init(gpa);
+    defer merged.deinit();
+    for (all_zcov) |zcov_path| {
+        var d = try zcov_format.read(gpa, io, zcov_path);
+        defer d.deinit();
+        if (d.pcs.len == 0) continue;
+        const locs = try resolver.resolveAddresses(gpa, io, d.bin_path, d.slide, d.pcs);
+        defer {
+            for (locs) |loc| if (!std.mem.eql(u8, loc.file, "<unknown>")) gpa.free(loc.file);
+            gpa.free(locs);
+        }
+        for (locs) |loc| {
+            if (loc.line == 0) continue;
+            try merged.recordHit(loc.file, loc.line);
+        }
+    }
+
+    const merged_key = findFile(&merged, "math.zig") orelse { fail("math.zig absent from merged coverage"); };
+    const merged_map = merged.file_map.get(merged_key).?;
+    const merged_add = merged_map.get(LINE_ADD) orelse { fail("add absent after merge"); };
+    const merged_mul = merged_map.get(LINE_MULTIPLY) orelse { fail("multiply absent after merge"); };
+    check(merged_add >= 2, "add hit count must be >= 2 after two runs");
+    check(merged_mul >= 2, "multiply hit count must be >= 2 after two runs");
+    step += 1;
+    std.debug.print("PASS [{d}] merged hit counts >= 2 after two runs (add={d}, multiply={d})\n", .{ step, merged_add, merged_mul });
+
     std.debug.print("=== all {d} integration tests passed ===\n", .{step});
 }
 
@@ -139,6 +197,15 @@ fn runSampleWithCoverage(
     parent_env: *std.process.Environ.Map,
     zcov_dir: []const u8,
 ) !void {
+    // Force a cold build so `zig build test` actually recompiles AND re-runs the
+    // instrumented binary. With a warm Zig cache the test run is marked
+    // up-to-date and skipped, so no coverage-<pid>.zcov is written (ZIG_COV_DIR
+    // is invisible to Zig's cache key). .zig-cache is a disposable, gitignored
+    // build artifact, so removing it is safe.
+    const cache_dir = try std.fs.path.join(gpa, &.{ build_options.sample_dir, ".zig-cache" });
+    defer gpa.free(cache_dir);
+    std.Io.Dir.deleteTree(.cwd(), io, cache_dir) catch {};
+
     // Build child environment: copy parent + set ZIG_COV_DIR.
     var env = std.process.Environ.Map.init(gpa);
     defer env.deinit();
@@ -146,7 +213,12 @@ fn runSampleWithCoverage(
     while (it.next()) |entry| try env.put(entry.key_ptr.*, entry.value_ptr.*);
     try env.put("ZIG_COV_DIR", zcov_dir);
 
-    const rt_arg = try std.fmt.allocPrint(gpa, "-Dcoverage-rt={s}", .{build_options.rt_lib_path});
+    // build_options.rt_lib_path is relative to the build root (this process's cwd).
+    // The sample build below runs from a different cwd (test/sample), so resolve
+    // it to an absolute path first.
+    const rt_abs = try std.Io.Dir.cwd().realPathFileAlloc(io, build_options.rt_lib_path, gpa);
+    defer gpa.free(rt_abs);
+    const rt_arg = try std.fmt.allocPrint(gpa, "-Dcoverage-rt={s}", .{rt_abs});
     defer gpa.free(rt_arg);
 
     std.debug.print("running: {s} build test -Dcoverage=true {s}\n", .{ build_options.zig_exe, rt_arg });
@@ -165,6 +237,34 @@ fn runSampleWithCoverage(
     switch (result.term) {
         .exited => |code| if (code != 0) fail("sample build exited with non-zero code"),
         else => fail("sample build terminated abnormally"),
+    }
+}
+
+/// Run an already-built instrumented binary directly (bypassing `zig build`),
+/// with ZIG_COV_DIR pointed at zcov_dir so it writes a fresh coverage-<pid>.zcov.
+fn runBinaryWithCoverage(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    parent_env: *std.process.Environ.Map,
+    bin_path: []const u8,
+    zcov_dir: []const u8,
+) !void {
+    var env = std.process.Environ.Map.init(gpa);
+    defer env.deinit();
+    var it = parent_env.iterator();
+    while (it.next()) |entry| try env.put(entry.key_ptr.*, entry.value_ptr.*);
+    try env.put("ZIG_COV_DIR", zcov_dir);
+
+    const result = try std.process.run(gpa, io, .{
+        .argv = &.{bin_path},
+        .environ_map = &env,
+    });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    switch (result.term) {
+        .exited => |code| if (code != 0) fail("direct sample run exited with non-zero code"),
+        else => fail("direct sample run terminated abnormally"),
     }
 }
 

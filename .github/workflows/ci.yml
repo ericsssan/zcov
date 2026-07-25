@@ -18,18 +18,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Zig
-        shell: bash
-        run: |
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            ARCH="x86_64-linux"
-          else
-            ARCH="aarch64-macos"
-          fi
-          INDEX=$(curl -sL https://ziglang.org/download/index.json)
-          URL=$(echo "$INDEX" | python3 -c "import sys,json; print(json.load(sys.stdin)['master']['$ARCH']['tarball'])")
-          curl -sL "$URL" | tar -xJ
-          echo "$(pwd)/$(ls -d zig-*)" >> $GITHUB_PATH
+      # Pin the exact nightly the project builds against, instead of tracking
+      # `master` (which drifts and breaks the build). The version is pinned HERE
+      # explicitly; keep it in sync with `minimum_zig_version` in build.zig.zon
+      # when bumping (setup-zig only consults that field when `version` is
+      # omitted). setup-zig fetches from the Zig community mirrors and
+      # checksum-verifies the download. NOTE: ziglang.org keeps only the latest
+      # nightly, so this exact build survives only as long as some community
+      # mirror still retains it; if all mirrors prune it this step fails and the
+      # version must be re-pinned.
+      - name: Install Zig (pinned)
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0-dev.657+2faf8debf
 
       - name: Build
         run: zig build
