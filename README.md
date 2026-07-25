@@ -61,7 +61,7 @@ The hot-path callback runs in **~2 ns** on Apple Silicon (measured; target was �
 git clone https://codeberg.org/ziglang/zig-coverage-tool
 cd zig-coverage-tool
 zig build -Doptimize=ReleaseSafe
-# Produces: zig-out/bin/zig-cov  and  zig-out/lib/libzig-cov-rt.a
+# Produces: zig-out/bin/zig-cov  and  zig-out/lib/zig-cov-rt.o
 ```
 
 Copy both to a directory on your `$PATH` (they must stay in the same directory).
@@ -75,15 +75,20 @@ const coverage = b.option(bool, "coverage", "Enable zig-cov") orelse false;
 const rt_path  = b.option([]const u8, "coverage-rt", "zig-cov-rt path") orelse null;
 
 if (coverage) {
+    unit_tests.use_llvm = true;                     // required (see note below)
     unit_tests.sanitize_coverage_trace_pc_guard = true;
-    unit_tests.root_module.link_libc = true; // required (see note below)
+    unit_tests.root_module.link_libc = true;        // required (see note below)
     if (rt_path) |p| unit_tests.root_module.addObjectFile(.{ .cwd_relative = p });
 }
 ```
 
 That's the only change needed. zig-cov passes the flags automatically when you use `zig-cov test`.
 
-> **Why `link_libc`?** The runtime writes the `.zcov` file from a libc `atexit` handler (and uses `fopen`). If the test binary does not link libc, `std.process.exit` exits via a raw syscall on Linux and the handler never runs, so no coverage is produced. macOS always links libc, so it works there either way — but set `link_libc` for portability.
+> **Why `use_llvm` and `link_libc`?** Two portability requirements, both of which macOS happens to satisfy by default but Linux does not:
+> - `use_llvm`: `sanitize-coverage` is only emitted by the LLVM backend. On x86_64 Linux the Debug default is the self-hosted backend, which silently produces **no** instrumentation, so forcing LLVM is required.
+> - `link_libc`: the runtime writes the `.zcov` from a libc `atexit` handler (and uses `fopen`). Without libc, `std.process.exit` exits via a raw syscall on Linux and the handler never runs.
+>
+> `rt_path` points at `zig-cov-rt.o` — a relocatable object, so the sancov symbols are force-included (a static archive gets dropped by `lld`).
 
 ## Usage
 
@@ -155,7 +160,7 @@ zig build bench
 
 ## Limitations
 
-- **Debug builds only.** `sanitize_coverage_trace_pc_guard` requires the LLVM backend, which is only active in `Debug` and `ReleaseSafe` optimize modes. `ReleaseFast` and `ReleaseSmall` use the self-hosted backend and do not support it. Coverage is inherently a debug-time activity, so this is not expected to be a practical constraint. Tracked upstream: [#23242](https://github.com/ziglang/zig/issues/23242).
+- **Requires the LLVM backend.** `sanitize_coverage_trace_pc_guard` is only emitted by the LLVM backend. Zig increasingly defaults to the self-hosted backend (already the case for Debug on x86_64), which silently produces no instrumentation, so the setup snippet forces it with `use_llvm = true`. This also means `Debug` or `ReleaseSafe` only — `ReleaseFast`/`ReleaseSmall` are not supported. Coverage is inherently a debug-time activity, so this is not expected to be a practical constraint. Tracked upstream: [#23242](https://github.com/ziglang/zig/issues/23242).
 - **Line-level accuracy.** The fast mode reports line coverage, not branch/expression coverage. A line is marked hit if any control-flow edge on that line executed.
 - **No Windows support yet.** Three concrete gaps need fixing before Windows works:
   1. `std.debug.Info.load` only handles `.elf` and `.macho` — `.coff` (Windows PE) hits an `UnsupportedDebugInfo` error at runtime (`src/dwarf/resolver.zig`)

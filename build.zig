@@ -19,11 +19,13 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
-    // zig-cov-rt: runtime static library linked into instrumented test binaries.
-    // Module with link_libc = true so atexit() is available.
-    const rt_lib = b.addLibrary(.{
+    // zig-cov-rt: runtime linked into instrumented test binaries. Emitted as a
+    // relocatable OBJECT (not a static library): the sancov callbacks must be
+    // force-included, but lld pulls .a members lazily and drops them, so on Linux
+    // __sanitizer_cov_trace_pc_guard ends up undefined. An object is always
+    // linked in full. link_libc = true so atexit()/fopen() are available.
+    const rt_obj = b.addObject(.{
         .name = "zig-cov-rt",
-        .linkage = .static,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/runtime/sancov.zig"),
             .target = target,
@@ -31,7 +33,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    b.installArtifact(rt_lib);
+    b.getInstallStep().dependOn(&b.addInstallFileWithDir(rt_obj.getEmittedBin(), .lib, "zig-cov-rt.o").step);
 
     // Run step for the CLI
     const run_cmd = b.addRunArtifact(exe);
@@ -85,7 +87,7 @@ pub fn build(b: *std.Build) void {
     // Builds the sample project under test/sample/ with coverage and verifies
     // that the full pipeline (sancov → .zcov → DWARF → report) is correct.
     const itest_options = b.addOptions();
-    itest_options.addOptionPath("rt_lib_path", rt_lib.getEmittedBin());
+    itest_options.addOptionPath("rt_lib_path", rt_obj.getEmittedBin());
     itest_options.addOption([]const u8, "sample_dir", b.root.joinString(b.graph.arena, "test/sample") catch @panic("OOM"));
     itest_options.addOption([]const u8, "zig_exe", b.graph.zig_exe);
 
@@ -101,7 +103,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     itest_exe.root_module.addOptions("build_options", itest_options);
-    itest_exe.step.dependOn(b.getInstallStep()); // ensure libzig-cov-rt.a is installed first
+    itest_exe.step.dependOn(b.getInstallStep()); // ensure zig-cov-rt.o is installed first
 
     const run_itest = b.addRunArtifact(itest_exe);
     const itest_step = b.step("itest", "Run integration tests (full pipeline: sancov → .zcov → DWARF → report)");

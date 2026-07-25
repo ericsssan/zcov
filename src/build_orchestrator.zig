@@ -66,7 +66,7 @@ pub fn run(opts: Options) OrchestratorError!RunResult {
     const self_path = self_path_buf[0..self_exe_len];
     const self_dir = std.fs.path.dirname(self_path) orelse ".";
 
-    const rt_path = try std.fs.path.join(allocator, &.{ self_dir, "libzig-cov-rt.a" });
+    const rt_path = try std.fs.path.join(allocator, &.{ self_dir, "zig-cov-rt.o" });
     defer allocator.free(rt_path);
 
     // Build argv.
