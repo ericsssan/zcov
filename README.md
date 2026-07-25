@@ -205,4 +205,4 @@ zig build test   # run unit tests
 zig build bench  # run performance benchmarks
 ```
 
-Requires the pinned Zig nightly `0.17.0-dev.657+2faf8debf` (see `minimum_zig_version` in `build.zig.zon`). The project uses in-flux std/build APIs, so newer nightlies may not compile until the sources are updated.
+Tracks the latest **Zig master** nightly (CI installs `master`). It was last verified against `0.17.0-dev.1464+6aff551f1` — recorded as `minimum_zig_version` in `build.zig.zon`. The project uses in-flux std/build APIs, so a future master may need a small porting pass; if `zig build` fails on a fresh master, that's expected churn, not a bug.

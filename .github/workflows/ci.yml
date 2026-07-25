@@ -18,19 +18,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pin the exact nightly the project builds against, instead of tracking
-      # `master` (which drifts and breaks the build). The version is pinned HERE
-      # explicitly; keep it in sync with `minimum_zig_version` in build.zig.zon
-      # when bumping (setup-zig only consults that field when `version` is
-      # omitted). setup-zig fetches from the Zig community mirrors and
-      # checksum-verifies the download. NOTE: ziglang.org keeps only the latest
-      # nightly, so this exact build survives only as long as some community
-      # mirror still retains it; if all mirrors prune it this step fails and the
-      # version must be re-pinned.
-      - name: Install Zig (pinned)
+      # Track the latest Zig master nightly. This deliberately trades
+      # reproducibility for currency: the newest nightly is always hosted on
+      # ziglang.org (so there is no community-mirror-purge risk), and CI failing
+      # after an upstream breaking change is the early-warning signal we want for
+      # a master-tracking project. `minimum_zig_version` in build.zig.zon records
+      # the last version this was verified against. If master breaks the build,
+      # port the sources and bump that floor.
+      - name: Install Zig (master)
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.17.0-dev.657+2faf8debf
+          version: master
           # Disable cross-run caching: the integration test bakes ephemeral
           # per-run paths (e.g. the zig executable path) into a compiled binary,
           # and restoring a stale .zig-cache across runs makes those paths point
