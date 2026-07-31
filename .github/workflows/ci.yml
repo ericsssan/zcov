@@ -47,3 +47,20 @@ jobs:
 
       - name: Integration test
         run: zig build itest
+
+      # Dogfooding: measure zig-cov's own test suite with zig-cov. Only on one
+      # matrix job, so a single tracefile is uploaded per run rather than two
+      # racing ones.
+      - name: Self-coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: ./zig-out/bin/zig-cov test --format=lcov --output=coverage.lcov
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.lcov
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # Coverage reporting must never be the reason a build goes red; the
+          # upload is informational. (Also the default, set explicitly.)
+          fail_ci_if_error: false

@@ -14,6 +14,7 @@ pub const OrchestratorError = error{
     ZigNotFound,
     BuildFailed,
     NoCoverageFiles,
+    RuntimeNotFound,
 } || std.mem.Allocator.Error || std.process.SpawnError || std.process.RunError ||
     std.Io.File.OpenError || std.Io.Dir.OpenError;
 
@@ -66,7 +67,7 @@ pub fn run(opts: Options) OrchestratorError!RunResult {
     const self_path = self_path_buf[0..self_exe_len];
     const self_dir = std.fs.path.dirname(self_path) orelse ".";
 
-    const rt_path = try std.fs.path.join(allocator, &.{ self_dir, "zig-cov-rt.o" });
+    const rt_path = try findRuntime(allocator, io, self_dir);
     defer allocator.free(rt_path);
 
     // Build argv.
@@ -136,6 +137,34 @@ pub fn run(opts: Options) OrchestratorError!RunResult {
         .zcov_files = zcov_files,
         .allocator = allocator,
     };
+}
+
+/// Locate zig-cov-rt.o, the runtime object linked into instrumented binaries.
+///
+/// Two layouts are supported: side by side with the executable (how the README
+/// tells you to install it), and the standard prefix layout that `zig build`
+/// produces, where the binary lands in `bin/` and the object in `lib/`.
+/// Returning a clear error beats passing a non-existent path to `zig build`,
+/// which fails later with a confusing message about the option value.
+fn findRuntime(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    self_dir: []const u8,
+) OrchestratorError![]u8 {
+    const candidates = [_][]const []const u8{
+        &.{ self_dir, "zig-cov-rt.o" },
+        &.{ self_dir, "..", "lib", "zig-cov-rt.o" },
+    };
+    for (candidates) |parts| {
+        const path = try std.fs.path.join(allocator, parts);
+        if (std.Io.Dir.cwd().access(io, path, .{})) |_| return path else |_| allocator.free(path);
+    }
+    std.debug.print(
+        "zig-cov: cannot find zig-cov-rt.o next to the executable ({s}) or in ../lib/.\n" ++
+            "         Keep zig-cov and zig-cov-rt.o together, or install with `zig build`.\n",
+        .{self_dir},
+    );
+    return error.RuntimeNotFound;
 }
 
 fn makeTmpDir(io: std.Io, buf: []u8) OrchestratorError![]const u8 {

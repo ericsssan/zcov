@@ -4,6 +4,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Self-coverage: zig-cov measuring its own test suite. These are the same
+    // options `zig-cov test` passes to any project (see the README setup), which
+    // is what lets the tool dogfood itself in CI.
+    const coverage = b.option(bool, "coverage", "Instrument zig-cov's own tests with zig-cov") orelse false;
+    const coverage_rt = b.option([]const u8, "coverage-rt", "Path to zig-cov-rt.o") orelse null;
+
     // zig-cov CLI executable
     const exe = b.addExecutable(.{
         .name = "zig-cov",
@@ -53,6 +59,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    if (coverage) instrument(unit_tests, coverage_rt);
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
@@ -66,6 +73,9 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    // Deliberately NOT instrumented: this binary's root module *is* the coverage
+    // runtime, so linking zig-cov-rt.o would duplicate the sancov symbols, and
+    // instrumenting the trace callbacks would have them record their own calls.
     const run_rt_tests = b.addRunArtifact(rt_tests);
     test_step.dependOn(&run_rt_tests.step);
 
@@ -80,6 +90,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    if (coverage) instrument(report_tests, coverage_rt);
     const run_report_tests = b.addRunArtifact(report_tests);
     test_step.dependOn(&run_report_tests.step);
 
@@ -121,4 +132,16 @@ pub fn build(b: *std.Build) void {
     const run_bench = b.addRunArtifact(bench_exe);
     const bench_step = b.step("bench", "Run synthetic performance benchmarks");
     bench_step.dependOn(&run_bench.step);
+}
+
+/// Apply zig-cov instrumentation to a test binary — the same three settings the
+/// README tells users to add to their own build.zig:
+///   * use_llvm: sanitize-coverage is only emitted by the LLVM backend
+///   * sanitize_coverage_trace_pc_guard: the instrumentation itself
+///   * link_libc: the runtime writes its .zcov from a libc atexit handler
+fn instrument(compile: *std.Build.Step.Compile, rt_path: ?[]const u8) void {
+    compile.use_llvm = true;
+    compile.sanitize_coverage_trace_pc_guard = true;
+    compile.root_module.link_libc = true;
+    if (rt_path) |p| compile.root_module.addObjectFile(.{ .cwd_relative = p });
 }
