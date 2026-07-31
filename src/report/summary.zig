@@ -97,6 +97,16 @@ pub fn write(writer: *std.Io.Writer, data: *const coverage.CoverageData, opts: O
     if (opts.color) try writer.writeAll(ANSI_RESET);
     try writer.writeByte('\n');
 
+    // Block coverage, when available. This is what the counters literally
+    // recorded, with no line attribution in between, so it is exact — worth
+    // showing next to the line figure, which is an estimate.
+    if (data.summary.blocks_found > 0) {
+        try writer.print(
+            "Blocks (exact)                          {d:.1}% ({d}/{d})\n",
+            .{ data.summary.blockPercent(), data.summary.blocks_hit, data.summary.blocks_found },
+        );
+    }
+
     const passes = opts.fail_under == 0 or total_lpct >= opts.fail_under;
     if (!passes) {
         try writer.print(

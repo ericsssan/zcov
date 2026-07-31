@@ -150,6 +150,27 @@ and other out-of-tree files are hidden. Relative source paths (project-local)
 are always kept. To report everything, pass an `--include` that matches (e.g.
 `--include=.zig`); to see the std library too, `--include=/std/`.
 
+## Block coverage
+
+Alongside the line figures, `zig-cov` reports:
+
+```
+Blocks (exact)                          62.5% (5/8)
+```
+
+This is what the counters literally recorded — how many instrumented basic
+blocks executed — with no line attribution in between, so unlike the line
+percentage it cannot be wrong. Blocks are attributed to files by their own
+address, so the same `--include`/`--exclude` filtering applies.
+
+It answers a stricter question than line coverage, closer to branch coverage: an
+error path that never runs is an unexecuted block even when every *line* of the
+function ran. Zig emits a branch after every `try`, so this figure reads low for
+ordinary code — a function whose every line executes but which never fails
+reports 2/9 blocks. That is not a bug; those branches genuinely never ran. Use
+line coverage to ask "did I execute this code", and block coverage to ask "did I
+exercise its paths".
+
 ## JSON format
 
 `--format=json` emits a stable document. Files are sorted by path and lines by
@@ -158,11 +179,12 @@ miss; lines with no generated code are absent.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "tool": "zig-cov",
   "summary": {
     "lines_found": 819, "lines_hit": 301, "line_percent": 36.75,
-    "functions_found": 0, "functions_hit": 0, "function_percent": 100.00
+    "functions_found": 0, "functions_hit": 0, "function_percent": 100.00,
+    "blocks_found": 512, "blocks_hit": 190, "block_percent": 37.11
   },
   "files": [
     {
@@ -286,7 +308,17 @@ zig build bench
 
 - **Requires the LLVM backend.** `sanitize_coverage_trace_pc_guard` is only emitted by the LLVM backend. Zig increasingly defaults to the self-hosted backend (already the case for Debug on x86_64), which silently produces no instrumentation, so the setup snippet forces it with `use_llvm = true`. This also means `Debug` or `ReleaseSafe` only — `ReleaseFast`/`ReleaseSmall` are not supported. Coverage is inherently a debug-time activity, so this is not expected to be a practical constraint. Tracked upstream: [#23242](https://github.com/ziglang/zig/issues/23242).
 - **Line-level accuracy.** The fast mode reports line coverage, not branch/expression coverage. A line is marked hit if any control-flow edge on that line executed.
-- **Coverage is a lower bound.** Instrumentation is per basic *block*, and LLVM prunes it from blocks it considers redundant. zig-cov gets the exact block table from the compiler and expands each executed block across the lines it spans, which is exact for straight-line code — but where an unexecuted error path sits between executed code and a *pruned* continuation, the following lines inherit the unexecuted status. Zig emits such a check after every `try`, so real percentages read below true line coverage. Lines are never wrongly reported as covered, so the number is safe to gate on — just don't compare it to gcov. Closing the gap needs `-fsanitize-coverage-no-prune`, which Zig does not expose.
+- **Line coverage is approximate, in both directions.** Instrumentation is per basic *block*, and LLVM prunes it from blocks it considers redundant. zig-cov takes the exact block table from the compiler and attributes each source line to the last block starting at or before it, which is exact for straight-line code (a function whose every line runs reports 100%). Where LLVM pruned a block, though, its lines inherit the status of whichever block precedes them, and that goes wrong two ways:
+
+  ```zig
+  while (i < n) : (i += 1) {
+      total += i;      // n == 0: never runs, but reported COVERED
+  }
+  try w.writeAll("a"); // runs, but a following pruned continuation
+  try w.writeAll("b"); // can be reported MISSED
+  ```
+
+  Measured: a `try`-heavy function whose every line executes reports 45%; a never-taken loop body is reported covered. Treat line percentages as an estimate, and read the annotated source rather than trusting a single number. **Block coverage** (below) involves no such inference. Closing the gap needs `-fsanitize-coverage-no-prune`, which Zig does not expose.
 - **No Windows support yet.** Three concrete gaps need fixing before Windows works:
   1. `std.debug.Info.load` only handles `.elf` and `.macho` — `.coff` (Windows PE) hits an `UnsupportedDebugInfo` error at runtime (`src/dwarf/resolver.zig`)
   2. The temp directory is hardcoded to `/tmp/zig-cov-{pid}` — Windows has no `/tmp/` (`src/build_orchestrator.zig:128`)

@@ -60,11 +60,16 @@ pub const Analysis = struct {
     /// One entry per coverable source line (whether hit or not). Feeding these
     /// through `Builder.recordCoverable` turns unhit lines into real misses.
     coverable: []ResolvedLocation,
+    /// Where each instrumented block lives, parallel to the `block_pcs` passed
+    /// in. This is a direct lookup of the block's own address, so callers can
+    /// attribute exact block counts to files without any line inference.
+    blocks: []ResolvedLocation,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Analysis) void {
         freeLocations(self.allocator, self.hits);
         freeLocations(self.allocator, self.coverable);
+        freeLocations(self.allocator, self.blocks);
         self.* = undefined;
     }
 };
@@ -133,11 +138,18 @@ pub fn analyze(
         try allocator.alloc(ResolvedLocation, 0);
     errdefer freeLocations(allocator, coverable);
 
+    // Location of every block, in the order they were passed in.
+    const blocks = if (block_pcs.len == 0)
+        try allocator.alloc(ResolvedLocation, 0)
+    else
+        try resolvePcs(allocator, io, &info, &coverage, slide, block_pcs);
+    errdefer freeLocations(allocator, blocks);
+
     if (block_pcs.len == 0 or coverable.len != coverable_keys.items.len) {
         // No instrumentation found, an object format we cannot decode, or the
         // enumeration bailed part way: mark just the lines the PCs resolved to.
         const hits = try dupeLocations(allocator, hit_starts);
-        return .{ .hits = hits, .coverable = coverable, .allocator = allocator };
+        return .{ .hits = hits, .coverable = coverable, .blocks = blocks, .allocator = allocator };
     }
 
     // Map both the executed PCs and every block start into DWARF address space.
@@ -154,7 +166,7 @@ pub fn analyze(
     }
 
     const hits = try expandBlocks(allocator, exec_keys.items, block_keys.items, coverable, coverable_keys.items);
-    return .{ .hits = hits, .coverable = coverable, .allocator = allocator };
+    return .{ .hits = hits, .coverable = coverable, .blocks = blocks, .allocator = allocator };
 }
 
 // ---------------------------------------------------------------------------

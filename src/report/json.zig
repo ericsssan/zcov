@@ -26,7 +26,7 @@ const std = @import("std");
 const coverage = @import("../coverage.zig");
 
 /// Schema version. Bump on any incompatible change to the document shape.
-pub const schema_version = 1;
+pub const schema_version = 2;
 
 /// Write the coverage data to `writer` as JSON.
 pub fn write(gpa: std.mem.Allocator, writer: *std.Io.Writer, data: *const coverage.CoverageData) !void {
@@ -49,7 +49,11 @@ pub fn write(gpa: std.mem.Allocator, writer: *std.Io.Writer, data: *const covera
     try writer.print("    \"line_percent\": {d:.2},\n", .{data.summary.linePercent()});
     try writer.print("    \"functions_found\": {d},\n", .{data.summary.functions_found});
     try writer.print("    \"functions_hit\": {d},\n", .{data.summary.functions_hit});
-    try writer.print("    \"function_percent\": {d:.2}\n", .{data.summary.functionPercent()});
+    try writer.print("    \"function_percent\": {d:.2},\n", .{data.summary.functionPercent()});
+    // Exact: what the counters recorded, with no line attribution in between.
+    try writer.print("    \"blocks_found\": {d},\n", .{data.summary.blocks_found});
+    try writer.print("    \"blocks_hit\": {d},\n", .{data.summary.blocks_hit});
+    try writer.print("    \"block_percent\": {d:.2}\n", .{data.summary.blockPercent()});
     try writer.writeAll("  },\n");
 
     // Per-file entries.

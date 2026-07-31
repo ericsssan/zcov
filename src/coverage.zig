@@ -43,6 +43,16 @@ pub const Summary = struct {
     lines_hit: u32,
     functions_found: u32,
     functions_hit: u32,
+    /// Instrumented basic blocks, and how many executed. Unlike the line
+    /// figures these involve no inference — the counters record exactly this —
+    /// so they are the numbers to trust when the two disagree.
+    blocks_found: u32 = 0,
+    blocks_hit: u32 = 0,
+
+    pub fn blockPercent(s: Summary) f64 {
+        if (s.blocks_found == 0) return 100.0;
+        return @as(f64, @floatFromInt(s.blocks_hit)) / @as(f64, @floatFromInt(s.blocks_found)) * 100.0;
+    }
 
     pub fn linePercent(s: Summary) f64 {
         if (s.lines_found == 0) return 100.0;
@@ -78,11 +88,16 @@ pub const Builder = struct {
     allocator: std.mem.Allocator,
     /// file_path → (line → hit_count)
     file_map: std.StringHashMap(std.AutoHashMap(u32, u32)),
+    /// binary path → (block virtual address → executed). Keyed by binary as
+    /// well as address so that several test binaries, or repeated runs of one,
+    /// merge into a union instead of being counted twice.
+    block_map: std.StringHashMap(std.AutoHashMap(u64, bool)),
 
     pub fn init(allocator: std.mem.Allocator) Builder {
         return .{
             .allocator = allocator,
             .file_map = std.StringHashMap(std.AutoHashMap(u32, u32)).init(allocator),
+            .block_map = std.StringHashMap(std.AutoHashMap(u64, bool)).init(allocator),
         };
     }
 
@@ -93,6 +108,26 @@ pub const Builder = struct {
             entry.value_ptr.deinit();
         }
         self.file_map.deinit();
+
+        var bit = self.block_map.iterator();
+        while (bit.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit();
+        }
+        self.block_map.deinit();
+    }
+
+    /// Record one instrumented block of `bin_path` at virtual address `vaddr`.
+    /// Executing it once is enough: merging runs ORs the flag.
+    pub fn recordBlock(self: *Builder, bin_path: []const u8, vaddr: u64, executed: bool) !void {
+        const gop = try self.block_map.getOrPut(bin_path);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try self.allocator.dupe(u8, bin_path);
+            gop.value_ptr.* = std.AutoHashMap(u64, bool).init(self.allocator);
+        }
+        const b = try gop.value_ptr.getOrPut(vaddr);
+        if (!b.found_existing) b.value_ptr.* = false;
+        if (executed) b.value_ptr.* = true;
     }
 
     /// Record that `line` in `file_path` was hit.
@@ -138,6 +173,15 @@ pub const Builder = struct {
             .functions_found = 0,
             .functions_hit = 0,
         };
+
+        var bit = self.block_map.valueIterator();
+        while (bit.next()) |blocks| {
+            var e = blocks.valueIterator();
+            while (e.next()) |executed| {
+                summary.blocks_found += 1;
+                if (executed.*) summary.blocks_hit += 1;
+            }
+        }
 
         var it = self.file_map.iterator();
         while (it.next()) |file_entry| {
@@ -353,4 +397,32 @@ test "Summary returns 100 percent when no items" {
     };
     try std.testing.expectApproxEqAbs(@as(f64, 100.0), s.linePercent(), 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 100.0), s.functionPercent(), 0.001);
+}
+
+test "Builder block accounting is a union, not a sum" {
+    var bldr = Builder.init(std.testing.allocator);
+    defer bldr.deinit();
+
+    // Two runs of the same binary report the same three blocks; the second run
+    // reaches one the first missed. Counting them twice would be wrong.
+    try bldr.recordBlock("/bin/t", 0x100, true);
+    try bldr.recordBlock("/bin/t", 0x200, false);
+    try bldr.recordBlock("/bin/t", 0x300, false);
+    try bldr.recordBlock("/bin/t", 0x100, true);
+    try bldr.recordBlock("/bin/t", 0x200, true); // reached this time
+    try bldr.recordBlock("/bin/t", 0x300, false);
+    // A different binary has its own address space.
+    try bldr.recordBlock("/bin/u", 0x100, true);
+
+    var cov = try bldr.build();
+    defer cov.deinit();
+
+    try std.testing.expectEqual(@as(u32, 4), cov.summary.blocks_found);
+    try std.testing.expectEqual(@as(u32, 3), cov.summary.blocks_hit);
+    try std.testing.expectApproxEqAbs(@as(f64, 75.0), cov.summary.blockPercent(), 0.01);
+}
+
+test "Summary blockPercent with no blocks" {
+    const s = Summary{ .lines_found = 0, .lines_hit = 0, .functions_found = 0, .functions_hit = 0 };
+    try std.testing.expectApproxEqAbs(@as(f64, 100.0), s.blockPercent(), 0.001);
 }

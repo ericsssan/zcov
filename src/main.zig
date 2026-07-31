@@ -448,6 +448,20 @@ fn processZcovFile(
     // Coverable lines first (establish misses), then hits (upgrade to executed).
     // Order does not matter — recordCoverable never lowers a count — but doing
     // coverable first keeps intent clear.
+    // Exact block accounting, straight from the counters. Each block is
+    // attributed to the file its own address resolves to, so the same path
+    // filter applies and the figure covers the same code as the line figures.
+    if (analysis.blocks.len == data.counts.len) {
+        for (analysis.blocks, data.pcs, data.counts) |loc, pc, count| {
+            if (!filter.accept(loc.file)) continue;
+            const vaddr = if (data.slide >= 0)
+                pc -| @as(u64, @intCast(data.slide))
+            else
+                pc + @as(u64, @intCast(-data.slide));
+            try builder.recordBlock(data.bin_path, vaddr, count != 0);
+        }
+    }
+
     for (analysis.coverable) |loc| {
         if (loc.line == 0) continue;
         if (!filter.accept(loc.file)) continue;
