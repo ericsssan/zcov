@@ -58,8 +58,8 @@ The hot-path callback runs in **~2 ns** on Apple Silicon (measured; target was â
 ## Installation
 
 ```sh
-git clone https://codeberg.org/ziglang/zig-coverage-tool
-cd zig-coverage-tool
+git clone https://github.com/ericsssan/zcov
+cd zcov
 zig build -Doptimize=ReleaseSafe
 # Produces: zig-out/bin/zig-cov  and  zig-out/lib/zig-cov-rt.o
 ```
