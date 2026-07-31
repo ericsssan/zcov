@@ -25,6 +25,7 @@ const LINE_ADD: u32 = 2; // return a + b;
 const LINE_SUBTRACT: u32 = 6; // return a - b;
 const LINE_MULTIPLY: u32 = 10; // return a * b;
 const LINE_UNTAKEN: u32 = 17; // total += i; a loop body that never runs
+const LINE_UNTAKEN_RETURN: u32 = 24; // return 100; a branch body that ends in return
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -210,8 +211,16 @@ pub fn main(init: std.process.Init) !void {
         fail("sumTo's loop body is absent — it should be a coverable miss");
     };
     check(untaken == 0, "a loop body that never runs must not be reported covered");
+
+    // The same for a branch whose body ends in `return`. The compiler attributes
+    // the point that resumes after the `if` to the body's last line, so this only
+    // comes out right by reading the entry counter on the body's opening line.
+    const untaken_ret = cov_map.get(LINE_UNTAKEN_RETURN) orelse {
+        fail("clamp's untaken branch is absent — it should be a coverable miss");
+    };
+    check(untaken_ret == 0, "a never-taken branch ending in return must not be reported covered");
     step += 1;
-    std.debug.print("PASS [{d}] never-executed loop body is a miss, not a false positive\n", .{step});
+    std.debug.print("PASS [{d}] never-executed branch bodies are misses, not false positives\n", .{step});
 
     std.debug.print("=== all {d} integration tests passed ===\n", .{step});
 }

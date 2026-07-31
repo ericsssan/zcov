@@ -13,6 +13,10 @@ test "sumTo with a zero-iteration loop" {
     try std.testing.expectEqual(@as(i32, 0), math.sumTo(0));
 }
 
+test "clamp" {
+    try std.testing.expectEqual(@as(i32, 5), math.clamp(5));
+}
+
 test "multiply" {
     try std.testing.expectEqual(@as(i32, 6), math.multiply(2, 3));
 }

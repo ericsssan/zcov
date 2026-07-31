@@ -373,18 +373,19 @@ fn dropUnprovenBranches(
 ) ![]ResolvedLocation {
     if (blocks.len != counts.len or hits.len == 0) return hits;
 
-    // Lines carrying a coverage point that executed, per file.
-    var points = std.StringHashMap(std.ArrayList(u32)).init(allocator);
+    // Coverage points per file, with whether each one fired.
+    const Point = struct { line: u32, executed: bool };
+    var points = std.StringHashMap(std.ArrayList(Point)).init(allocator);
     defer {
         var it = points.valueIterator();
         while (it.next()) |v| v.deinit(allocator);
         points.deinit();
     }
     for (blocks, counts) |loc, count| {
-        if (count == 0 or loc.line == 0) continue;
+        if (loc.line == 0) continue;
         const gop = try points.getOrPut(loc.file);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(allocator, loc.line);
+        try gop.value_ptr.append(allocator, .{ .line = loc.line, .executed = count != 0 });
     }
 
     // Conditional body spans, parsed once per file. The keys are owned copies:
@@ -427,12 +428,24 @@ fn dropUnprovenBranches(
 
         const keep = if (branches.innermost(file_spans, loc.line)) |body| inside: {
             const pts = points.get(loc.file) orelse break :inside false;
-            // Evidence has to come from strictly inside the body. The opening
-            // line carries the condition, and the closing line is where control
-            // merges again afterwards — both execute even when the body does
-            // not, so neither proves anything about it.
+
+            // The compiler puts a coverage point on the body's opening line that
+            // counts entries into the body — it stays at zero when a loop never
+            // iterates or a branch is never taken. That is a verdict, not an
+            // inference, so prefer it when present. Any zero means "not entered".
+            var saw_entry = false;
             for (pts.items) |p| {
-                if (p > body.start_line and p < body.end_line) break :inside true;
+                if (p.line != body.start_line) continue;
+                if (!p.executed) break :inside false;
+                saw_entry = true;
+            }
+            if (saw_entry) break :inside true;
+
+            // No entry counter: fall back to requiring proof from strictly
+            // inside. The opening line carries the condition and the closing
+            // line is where control merges again, so neither proves anything.
+            for (pts.items) |p| {
+                if (p.executed and p.line > body.start_line and p.line < body.end_line) break :inside true;
             }
             break :inside false;
         } else true;

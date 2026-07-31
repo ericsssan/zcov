@@ -18,3 +18,10 @@ pub fn sumTo(n: i32) i32 {
     }
     return total;
 }
+
+pub fn clamp(x: i32) i32 {
+    if (x > 100) {
+        return 100; // 24: never taken, body ends in return
+    }
+    return x;
+}
