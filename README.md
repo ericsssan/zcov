@@ -110,6 +110,9 @@ zig-cov test --format=json | jq '.summary.line_percent'
 # Cobertura XML (Jenkins, GitLab CI, Codecov)
 zig-cov test --format=cobertura --output=coverage.xml
 
+# Inline annotations on the PR diff (inside GitHub Actions)
+zig-cov test --format=github
+
 # Fail the build if coverage drops below a threshold
 zig-cov test --fail-under=80
 
@@ -128,13 +131,14 @@ zig-cov report --format=lcov *.zcov
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format=summary\|lcov\|html\|json\|cobertura` | `summary` | Output format |
+| `--format=summary\|lcov\|html\|json\|cobertura\|github` | `summary` | Output format |
 | `--output=<path>` | stdout | Output file (all formats go to stdout except `html`, which defaults to `coverage.html`) |
 | `--fail-under=<pct>` | `0` | Exit 1 if line coverage is below this percentage |
 | `--color=on\|off\|auto` | `auto` | Terminal colour in summary output |
 | `--project=<dir>` | `.` | Directory containing `build.zig` |
 | `--include=<substr>` | — | Only report files matching (repeatable; overrides the default project-dir filter) |
 | `--exclude=<substr>` | — | Drop files matching (repeatable) |
+| `--max-annotations=<n>` | `10` | Cap for `--format=github` (`0` = no cap) |
 
 By default only files under `--project` are reported — the Zig standard library
 and other out-of-tree files are hidden. Relative source paths (project-local)
@@ -193,6 +197,30 @@ and Codecov. Files are grouped into `<package>` elements by directory, and
 
 zig-cov has no branch data, so `branch-rate` and the branch counters are
 reported as zero rather than fabricated.
+
+## GitHub Actions annotations
+
+`--format=github` writes workflow commands to stdout, which the runner turns
+into inline annotations on the pull request diff:
+
+```yaml
+- name: Coverage
+  run: zig-cov test --format=github --fail-under=80
+```
+
+```
+::warning file=src/parser.zig,line=164,endLine=170::6 lines not covered
+::notice::Coverage 36.8% (301/819 lines); 152 more uncovered regions not annotated (limit 10)
+```
+
+- Runs of uncovered lines are merged into one ranged annotation instead of one
+  per line. A run is broken by a *covered* line, so lines with no generated code
+  (comments, blanks) don't split it — the message states how many lines in the
+  range are actually uncovered.
+- Output is capped at `--max-annotations` (default 10) because GitHub only
+  surfaces a limited number per step. Anything dropped is reported in the
+  summary rather than silently discarded; pass `--max-annotations=0` for all.
+- With `--fail-under`, falling short emits an `::error::` annotation and exits 1.
 
 ## .zcov file format
 
@@ -254,7 +282,8 @@ src/
 │   ├── summary.zig           Terminal table writer
 │   ├── html.zig              HTML report (source view + highlighting)
 │   ├── json.zig              JSON writer
-│   └── cobertura.zig         Cobertura XML writer
+│   ├── cobertura.zig         Cobertura XML writer
+│   └── github.zig            GitHub Actions annotations
 ├── runtime/
 │   ├── sancov.zig            __sanitizer_cov_trace_pc_guard callbacks
 │   └── zcov_format.zig       .zcov binary format read/write
@@ -268,7 +297,7 @@ src/
 - [ ] Branch/expression coverage via LLVM profraw (`--precise` mode)
 - [x] JSON output
 - [x] Cobertura XML output
-- [ ] GitHub Actions annotations
+- [x] GitHub Actions annotations
 - [ ] Codecov upload integration
 - [ ] Comptime/unreachable line detection
 

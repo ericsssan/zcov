@@ -6,7 +6,7 @@
 //!   zig-cov --help
 //!
 //! Options:
-//!   --format=summary|lcov|html|json|cobertura
+//!   --format=summary|lcov|html|json|cobertura|github
 //!                             Output format (default: summary)
 //!   --output=<path>           Output file path (default: stdout for summary,
 //!                             coverage.html for html)
@@ -29,6 +29,7 @@ const summary_report = @import("report/summary.zig");
 const html_report = @import("report/html.zig");
 const json_report = @import("report/json.zig");
 const cobertura_report = @import("report/cobertura.zig");
+const github_report = @import("report/github.zig");
 const orchestrator = @import("build_orchestrator.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -79,8 +80,9 @@ fn printUsage() void {
         \\  report   Generate report from existing .zcov file(s)
         \\
         \\Options:
-        \\  --format=summary|lcov|html|json|cobertura
-        \\                            Output format (default: summary)
+        \\  --format=summary|lcov|html|json|cobertura|github
+        \\                            Output format (default: summary;
+        \\                            github = Actions inline annotations)
         \\  --output=<path>           Output file (html defaults to coverage.html;
         \\                            others go to stdout unless set)
         \\  --fail-under=<pct>        Exit 1 if line coverage below threshold
@@ -89,6 +91,7 @@ fn printUsage() void {
         \\  --include=<substr>        Only report files matching (repeatable;
         \\                            overrides the default project-dir filter)
         \\  --exclude=<substr>        Drop files matching (repeatable)
+        \\  --max-annotations=<n>     Cap for --format=github (default 10, 0 = all)
         \\
         \\By default only files under --project are reported (the Zig std library
         \\and out-of-tree files are hidden). Pass --include=<substr> to override.
@@ -109,7 +112,7 @@ fn printUsage() void {
 // Parsed options
 // ---------------------------------------------------------------------------
 
-const Format = enum { summary, lcov, html, json, cobertura };
+const Format = enum { summary, lcov, html, json, cobertura, github };
 
 const Opts = struct {
     format: Format = .summary,
@@ -122,6 +125,8 @@ const Opts = struct {
     include: std.ArrayList([]const u8) = .empty,
     /// Substrings; files matching any are dropped (applied after include).
     exclude: std.ArrayList([]const u8) = .empty,
+    /// Cap on annotations emitted by --format=github (0 = unlimited).
+    max_annotations: usize = 10,
     extra_args: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *Opts, gpa: std.mem.Allocator) void {
@@ -190,6 +195,8 @@ fn parseOpts(gpa: std.mem.Allocator, raw_args: []const []const u8) !Opts {
                 opts.format = .json;
             } else if (std.mem.eql(u8, val, "cobertura")) {
                 opts.format = .cobertura;
+            } else if (std.mem.eql(u8, val, "github")) {
+                opts.format = .github;
             } else {
                 std.debug.print("zig-cov: unknown format '{s}'\n", .{val});
                 std.process.exit(1);
@@ -212,6 +219,12 @@ fn parseOpts(gpa: std.mem.Allocator, raw_args: []const []const u8) !Opts {
             try opts.include.append(gpa, arg["--include=".len..]);
         } else if (std.mem.startsWith(u8, arg, "--exclude=")) {
             try opts.exclude.append(gpa, arg["--exclude=".len..]);
+        } else if (std.mem.startsWith(u8, arg, "--max-annotations=")) {
+            const val = arg["--max-annotations=".len..];
+            opts.max_annotations = std.fmt.parseInt(usize, val, 10) catch {
+                std.debug.print("zig-cov: invalid --max-annotations value '{s}'\n", .{val});
+                std.process.exit(1);
+            };
         } else {
             try opts.extra_args.append(gpa, arg);
         }
@@ -360,6 +373,16 @@ fn generateReport(
                 try json_report.write(gpa, stdout, &cov_data);
                 try stdout.flush();
             }
+        },
+        .github => {
+            // Workflow commands must reach the job log, so always stdout.
+            const passes = try github_report.write(gpa, stdout, &cov_data, .{
+                .source_root = project_abs,
+                .max_annotations = opts.max_annotations,
+                .fail_under = opts.fail_under,
+            });
+            try stdout.flush();
+            if (!passes) std.process.exit(1);
         },
         .cobertura => {
             // Timestamps come from the clock, so reports are not byte-identical
