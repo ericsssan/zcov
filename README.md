@@ -308,7 +308,7 @@ zig build bench
 
 - **Requires the LLVM backend.** `sanitize_coverage_trace_pc_guard` is only emitted by the LLVM backend. Zig increasingly defaults to the self-hosted backend (already the case for Debug on x86_64), which silently produces no instrumentation, so the setup snippet forces it with `use_llvm = true`. This also means `Debug` or `ReleaseSafe` only — `ReleaseFast`/`ReleaseSmall` are not supported. Coverage is inherently a debug-time activity, so this is not expected to be a practical constraint. Tracked upstream: [#23242](https://github.com/ziglang/zig/issues/23242).
 - **Line-level accuracy.** The fast mode reports line coverage, not branch/expression coverage. A line is marked hit if any control-flow edge on that line executed.
-- **Line coverage is approximate, in both directions.** Instrumentation is per basic *block*, and LLVM prunes it from blocks it considers redundant. zig-cov takes the exact block table from the compiler and attributes each source line to the last block starting at or before it, which is exact for straight-line code (a function whose every line runs reports 100%). Where LLVM pruned a block, though, its lines inherit the status of whichever block precedes them, and that goes wrong two ways:
+- **Line coverage is approximate, in both directions.** Coverage points are chosen by the Zig compiler, and it places them where *fuzzing* benefits rather than at every branch — `Sema.zig` marks error-handling branches as points of interest and explicitly declines others ("code coverage is not valuable on either branch", "not wanted for panic branches"). zig-cov takes that exact table and attributes each source line to the last point starting at or before it, which is exact for straight-line code (a function whose every line runs reports 100%). Where the compiler placed no point, though, those lines inherit the status of whichever point precedes them, and that goes wrong two ways:
 
   ```zig
   while (i < n) : (i += 1) {
@@ -318,7 +318,9 @@ zig build bench
   try w.writeAll("b"); // can be reported MISSED
   ```
 
-  Measured: a `try`-heavy function whose every line executes reports 45%; a never-taken loop body is reported covered. Treat line percentages as an estimate, and read the annotated source rather than trusting a single number. **Block coverage** (below) involves no such inference. Closing the gap needs `-fsanitize-coverage-no-prune`, which Zig does not expose.
+  Both follow from that policy: an error branch *is* instrumented, so when it never runs it shadows the lines after it; a loop body branch is *not*, so it inherits its header. Measured: a `try`-heavy function whose every line executes reports 45%; a never-taken loop body is reported covered. Treat line percentages as an estimate and read the annotated source rather than a single number — **block coverage** (below) involves no such inference.
+
+  This is not LLVM's `-fsanitize-coverage` pruning: Zig sets `PCTable` and `Inline8bitCounters` to false and emits its own instrumentation, so LLVM's `no-prune` knob would not change what zig-cov sees. Closing the gap needs Zig to emit a coverage point per branch — a compiler change, not a flag.
 - **No Windows support yet.** Three concrete gaps need fixing before Windows works:
   1. `std.debug.Info.load` only handles `.elf` and `.macho` — `.coff` (Windows PE) hits an `UnsupportedDebugInfo` error at runtime (`src/dwarf/resolver.zig`)
   2. The temp directory is hardcoded to `/tmp/zig-cov-{pid}` — Windows has no `/tmp/` (`src/build_orchestrator.zig:128`)
