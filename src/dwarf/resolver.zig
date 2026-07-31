@@ -387,11 +387,16 @@ fn dropUnprovenBranches(
         try gop.value_ptr.append(allocator, loc.line);
     }
 
-    // Conditional body spans, parsed once per file.
+    // Conditional body spans, parsed once per file. The keys are owned copies:
+    // a dropped hit's path is freed below, and a map keyed on it would be left
+    // hashing freed memory.
     var spans = std.StringHashMap([]const branches.Span).init(allocator);
     defer {
-        var it = spans.valueIterator();
-        while (it.next()) |v| if (v.len > 0) allocator.free(v.*);
+        var it = spans.iterator();
+        while (it.next()) |e| {
+            allocator.free(e.key_ptr.*);
+            if (e.value_ptr.len > 0) allocator.free(e.value_ptr.*);
+        }
         spans.deinit();
     }
 
@@ -415,7 +420,8 @@ fn dropUnprovenBranches(
                 defer allocator.free(src);
                 parsed = branches.conditionalBodies(allocator, src) catch &.{};
             } else |_| {}
-            spans.put(loc.file, parsed) catch {};
+            const key = allocator.dupe(u8, loc.file) catch break :blk parsed;
+            spans.put(key, parsed) catch allocator.free(key);
             break :blk parsed;
         };
 
