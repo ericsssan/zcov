@@ -38,11 +38,12 @@ zig-cov is written in Zig, ships as a single binary, and works on Linux and macO
 
 ## How it works
 
-zig-cov uses LLVM's SanitizerCoverage (`-fsanitize-coverage=trace-pc-guard`), the same infrastructure Zig's built-in fuzzer uses. The runtime library provides custom `__sanitizer_cov_trace_pc_guard` callbacks that:
+zig-cov uses the same SanitizerCoverage instrumentation Zig's built-in fuzzer relies on: inline 8-bit counters plus a table of the program counters they correspond to. The runtime:
 
-1. Record a 1-bit hit in an atomic bitmap per control-flow edge
-2. Capture the return address (PC) on the first hit
-3. Write a `.zcov` binary file on process exit
+1. Reads `__sancov_cntrs` (one byte per instrumented block) and `__sancov_pcs1` (that block's address) at process exit
+2. Writes both to a `.zcov` binary file
+
+Recording the whole table rather than only what ran is what makes misses real: a block with a zero counter definitely never executed, and the table's addresses mark block boundaries, so an executed block can be expanded across every line it spans.
 
 The CLI then maps those PC addresses back to `file:line` locations using DWARF debug information via `std.debug.Info` (supports ELF on Linux, Mach-O on macOS).
 
@@ -56,7 +57,7 @@ The CLI then maps those PC addresses back to `file:line` locations using DWARF d
 | Accuracy | line-level | expression-level | line-level | line-level |
 | Uses existing Zig infra | yes | needs flag exposure | external tool | full parser needed |
 
-The hot-path callback runs in **~2 ns** on Apple Silicon (measured; target was ≤5 ns).
+There is no zig-cov code on the instrumentation hot path: LLVM emits an inline byte increment per block, and the runtime reads the counters once, at process exit.
 
 ## Installation
 
@@ -78,17 +79,18 @@ const coverage = b.option(bool, "coverage", "Enable zig-cov") orelse false;
 const rt_path  = b.option([]const u8, "coverage-rt", "zig-cov-rt path") orelse null;
 
 if (coverage) {
-    unit_tests.use_llvm = true;                     // required (see note below)
-    unit_tests.sanitize_coverage_trace_pc_guard = true;
-    unit_tests.root_module.link_libc = true;        // required (see note below)
+    unit_tests.use_llvm = true;                  // required (see note below)
+    unit_tests.root_module.fuzz = true;          // emits counters + PC table
+    unit_tests.root_module.link_libc = true;     // required (see note below)
     if (rt_path) |p| unit_tests.root_module.addObjectFile(.{ .cwd_relative = p });
 }
 ```
 
 That's the only change needed. zig-cov passes the flags automatically when you use `zig-cov test`.
 
-> **Why `use_llvm` and `link_libc`?** Two portability requirements, both of which macOS happens to satisfy by default but Linux does not:
-> - `use_llvm`: `sanitize-coverage` is only emitted by the LLVM backend. On x86_64 Linux the Debug default is the self-hosted backend, which silently produces **no** instrumentation, so forcing LLVM is required.
+> **Why these three?**
+> - `fuzz`: this is the switch that makes LLVM emit inline 8-bit counters and the table of block addresses they belong to (`__sancov_cntrs` / `__sancov_pcs1`), which is what the zig-cov runtime reads. It is the only coverage instrumentation Zig's build system exposes. Note it also makes the test binary require the build runner — `zig build test` is fine, but the binary can no longer be executed standalone.
+> - `use_llvm`: instrumentation is only emitted by the LLVM backend. The self-hosted backends emit **none**, silently, so forcing LLVM is required.
 > - `link_libc`: the runtime writes the `.zcov` from a libc `atexit` handler (and uses `fopen`). Without libc, `std.process.exit` exits via a raw syscall on Linux and the handler never runs.
 >
 > `rt_path` points at `zig-cov-rt.o` — a relocatable object, so the sancov symbols are force-included (a static archive gets dropped by `lld`).
@@ -253,12 +255,13 @@ relative to the root the service expects.
 
 ```
 Magic:      [4]u8  = "ZCOV"
-Version:    u32    = 1  (little-endian throughout)
+Version:    u32    = 2  (little-endian throughout)
 Slide:      i64    = ASLR slide (subtract from PCs to get virtual addresses)
-NumPCs:     u32    = number of hit edge PCs
+NumPCs:     u32    = number of instrumented blocks
 BinPathLen: u16    = byte length of binary path
 BinPath:    [BinPathLen]u8
-PCs:        [NumPCs]u64
+PCs:        [NumPCs]u64 = address of every instrumented block
+Counts:     [NumPCs]u8  = execution count per block, saturating at 255
 ```
 
 Multiple `.zcov` files (one per test binary invocation) are merged by the CLI before generating the report.
@@ -269,7 +272,6 @@ Measured on Apple Silicon (M-series, `ReleaseSafe`):
 
 | Metric | Result | Target |
 |--------|--------|--------|
-| sancov hot-path (first hit) | 2 ns/call | ≤ 5 ns |
 | `recordHit` (100 K calls) | 20 ns/call | — |
 | LCOV write (10 K files) | < 1 ms | ≤ 5 000 ms |
 | summary write (10 K files) | 3 ms | ≤ 1 000 ms |
@@ -284,7 +286,7 @@ zig build bench
 
 - **Requires the LLVM backend.** `sanitize_coverage_trace_pc_guard` is only emitted by the LLVM backend. Zig increasingly defaults to the self-hosted backend (already the case for Debug on x86_64), which silently produces no instrumentation, so the setup snippet forces it with `use_llvm = true`. This also means `Debug` or `ReleaseSafe` only — `ReleaseFast`/`ReleaseSmall` are not supported. Coverage is inherently a debug-time activity, so this is not expected to be a practical constraint. Tracked upstream: [#23242](https://github.com/ziglang/zig/issues/23242).
 - **Line-level accuracy.** The fast mode reports line coverage, not branch/expression coverage. A line is marked hit if any control-flow edge on that line executed.
-- **Coverage is a lower bound.** `trace-pc-guard` instruments basic *blocks*, and LLVM prunes instrumentation from blocks it considers redundant. zig-cov recovers every instrumented block from the binary and expands each executed one across the lines it spans, which is most of the way there — but where an unexecuted error or panic block sits between executed code and a pruned continuation, the following lines inherit the unexecuted status. Since Zig emits a check after every `try`, real percentages read a few points to a few tens of points *below* true line coverage. Reported lines are never wrongly marked covered, so the number is safe to gate on — just don't compare it to gcov. Fixing this needs `-fsanitize-coverage-pc-table` or `-fsanitize-coverage-no-prune`, neither of which Zig's build system currently exposes.
+- **Coverage is a lower bound.** Instrumentation is per basic *block*, and LLVM prunes it from blocks it considers redundant. zig-cov gets the exact block table from the compiler and expands each executed block across the lines it spans, which is exact for straight-line code — but where an unexecuted error path sits between executed code and a *pruned* continuation, the following lines inherit the unexecuted status. Zig emits such a check after every `try`, so real percentages read below true line coverage. Lines are never wrongly reported as covered, so the number is safe to gate on — just don't compare it to gcov. Closing the gap needs `-fsanitize-coverage-no-prune`, which Zig does not expose.
 - **No Windows support yet.** Three concrete gaps need fixing before Windows works:
   1. `std.debug.Info.load` only handles `.elf` and `.macho` — `.coff` (Windows PE) hits an `UnsupportedDebugInfo` error at runtime (`src/dwarf/resolver.zig`)
   2. The temp directory is hardcoded to `/tmp/zig-cov-{pid}` — Windows has no `/tmp/` (`src/build_orchestrator.zig:128`)
@@ -301,8 +303,8 @@ src/
 ├── build_orchestrator.zig    Invokes zig build test with coverage flags
 ├── coverage.zig              Unified coverage data model
 ├── dwarf/
-│   └── resolver.zig          PC → file:line resolver + coverable-line
-│                             enumeration (ELF + Mach-O)
+│   └── resolver.zig          PC → file:line resolver, block expansion and
+│                             coverable-line enumeration (ELF + Mach-O)
 ├── report/
 │   ├── paths.zig             Repo-relative path helper (shared)
 │   ├── lcov.zig              LCOV tracefile writer
@@ -312,7 +314,7 @@ src/
 │   ├── cobertura.zig         Cobertura XML writer
 │   └── github.zig            GitHub Actions annotations
 ├── runtime/
-│   ├── sancov.zig            __sanitizer_cov_trace_pc_guard callbacks
+│   ├── sancov.zig            reads the counter + PC-table sections at exit
 │   └── zcov_format.zig       .zcov binary format read/write
 └── bench.zig                 Synthetic performance benchmarks
 ```

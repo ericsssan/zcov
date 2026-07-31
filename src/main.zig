@@ -441,6 +441,7 @@ fn processZcovFile(
         data.bin_path,
         data.slide,
         data.pcs,
+        data.counts,
     );
     defer analysis.deinit();
 

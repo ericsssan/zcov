@@ -6,7 +6,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const blocks = @import("blocks.zig");
 
 pub const ResolvedLocation = struct {
     /// Absolute or relative path to the source file.
@@ -77,13 +76,27 @@ pub const Analysis = struct {
 /// per-object-file DWARF that is loaded lazily while resolving `pcs`, so only
 /// object files touched by `pcs` are enumerated — i.e. coverable lines are
 /// reported for files that had at least one hit.
+/// `block_pcs` is every instrumented block's runtime address and `counts` its
+/// execution count, index for index — exactly what the runtime recorded. Blocks
+/// with a zero count are real misses, and the addresses double as block
+/// boundaries so an executed block can be expanded across the lines it spans.
 pub fn analyze(
     allocator: std.mem.Allocator,
     io: std.Io,
     bin_path: []const u8,
     slide: i64,
-    pcs: []const u64,
+    block_pcs: []const u64,
+    counts: []const u8,
 ) ResolveError!Analysis {
+    // Executed subset, in the same address space as `block_pcs`.
+    var hit_list: std.ArrayList(u64) = .empty;
+    defer hit_list.deinit(allocator);
+    if (block_pcs.len == counts.len) {
+        for (block_pcs, counts) |pc, c| {
+            if (c != 0) try hit_list.append(allocator, pc);
+        }
+    }
+    const pcs = hit_list.items;
     var coverage: std.debug.Coverage = .init;
     defer coverage.deinit(allocator);
     var handle = try openBinary(io, bin_path);
@@ -98,14 +111,6 @@ pub fn analyze(
         try resolvePcs(allocator, io, &info, &coverage, slide, pcs);
     defer freeLocations(allocator, hit_starts);
 
-    // Every instrumented block in the binary, executed or not. Without this we
-    // could only mark the single line each recorded PC lands on, which
-    // drastically under-reports: a run of straight-line statements is one block,
-    // so only its first line would count as covered.
-    const block_pcs = blocks.scanBinary(allocator, io, bin_path) catch
-        try allocator.alloc(u64, 0);
-    defer allocator.free(block_pcs);
-
     const vaddrOf = struct {
         fn f(pc: u64, s: i64) u64 {
             return if (s >= 0) pc -| @as(u64, @intCast(s)) else pc + @as(u64, @intCast(-s));
@@ -118,8 +123,7 @@ pub fn analyze(
     // Touching every address first means no later step inserts, so the pointers
     // taken afterwards stay valid.
     if (block_pcs.len > 0) {
-        for (block_pcs) |pc| _ = translate(&info, allocator, io, pc);
-        for (pcs) |pc| _ = translate(&info, allocator, io, vaddrOf(pc, slide));
+        for (block_pcs) |pc| _ = translate(&info, allocator, io, vaddrOf(pc, slide));
     }
 
     // Best-effort: a malformed line program should not sink the whole report.
@@ -146,7 +150,7 @@ pub fn analyze(
     var block_keys: std.ArrayList(AddrKey) = .empty;
     defer block_keys.deinit(allocator);
     for (block_pcs) |pc| {
-        if (translate(&info, allocator, io, pc)) |k| try block_keys.append(allocator, k);
+        if (translate(&info, allocator, io, vaddrOf(pc, slide))) |k| try block_keys.append(allocator, k);
     }
 
     const hits = try expandBlocks(allocator, exec_keys.items, block_keys.items, coverable, coverable_keys.items);

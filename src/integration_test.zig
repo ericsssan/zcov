@@ -44,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
     defer std.Io.Dir.deleteTree(.cwd(), io, zcov_dir) catch {};
 
     // Step 1: build and run the sample project with coverage instrumentation.
-    try runSampleWithCoverage(gpa, io, init.environ_map, zcov_dir);
+    try runSampleWithCoverage(gpa, io, init.environ_map, zcov_dir, "1");
 
     // Step 2: collect .zcov files.
     const zcov_files = try collectZcovFiles(gpa, io, zcov_dir);
@@ -79,26 +79,20 @@ pub fn main(init: std.process.Init) !void {
     for (zcov_files) |zcov_path| {
         var data = try zcov_format.read(gpa, io, zcov_path);
         defer data.deinit();
-        total_pcs += data.pcs.len;
-        if (data.pcs.len == 0) continue;
-
-        const locations = try resolver.resolveAddresses(gpa, io, data.bin_path, data.slide, data.pcs);
-        defer {
-            for (locations) |loc| {
-                if (!std.mem.eql(u8, loc.file, "<unknown>")) gpa.free(loc.file);
-            }
-            gpa.free(locations);
-        }
-
-        for (locations) |loc| {
+        // Use the real pipeline: analyze() expands each executed block across
+        // the lines it spans, which is what the reporter consumes.
+        var analysis = try resolver.analyze(gpa, io, data.bin_path, data.slide, data.pcs, data.counts);
+        defer analysis.deinit();
+        total_pcs += analysis.hits.len;
+        for (analysis.hits) |loc| {
             if (loc.line == 0) continue;
             try builder.recordHit(loc.file, loc.line);
         }
     }
 
-    check(total_pcs > 0, ".zcov file(s) contain zero PCs — sancov callbacks not firing?");
+    check(total_pcs > 0, ".zcov file(s) yielded no covered lines — instrumentation not recording?");
     step += 1;
-    std.debug.print("PASS [{d}] {d} PCs resolved through DWARF\n", .{ step, total_pcs });
+    std.debug.print("PASS [{d}] {d} covered lines resolved through DWARF\n", .{ step, total_pcs });
 
     // Step 4: find math.zig in the coverage map.
     // Match the sample's src/math.zig specifically. With the LLVM backend the
@@ -136,19 +130,14 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("PASS [{d}] hit counts are positive (add={d}, multiply={d})\n", .{ step, add_hits, mul_hits });
 
     // Step 7-8: multi-run merge + ASLR.
-    // Re-execute the instrumented test binary directly (its absolute path is
-    // recorded in the first run's .zcov). Going through `zig build test` again
-    // would hit Zig's build cache and not actually re-run the binary. A direct
-    // second run writes a new coverage-<pid>.zcov with a different PID and (on
-    // macOS) a different ASLR slide. After merging both .zcov files each
-    // function's hit count must be >= 2.
-    const first_bin = blk: {
-        var d0 = try zcov_format.read(gpa, io, zcov_files[0]);
-        defer d0.deinit();
-        break :blk try gpa.dupe(u8, d0.bin_path);
-    };
-    defer gpa.free(first_bin);
-    try runBinaryWithCoverage(gpa, io, init.environ_map, first_bin, zcov_dir);
+    // Build and run the sample a second time, with its own throwaway cache so
+    // the run genuinely happens again rather than being served from cache. A
+    // fuzz-instrumented test binary cannot be executed standalone (Zig's test
+    // runner panics with "fuzz test requires server"), so the second run has to
+    // go through the build system too. It writes a new coverage-<pid>.zcov with
+    // a different PID and (on macOS) a different ASLR slide; after merging both,
+    // each function's hit count must be >= 2.
+    try runSampleWithCoverage(gpa, io, init.environ_map, zcov_dir, "2");
 
     const all_zcov = try collectZcovFiles(gpa, io, zcov_dir);
     defer {
@@ -164,13 +153,9 @@ pub fn main(init: std.process.Init) !void {
     for (all_zcov) |zcov_path| {
         var d = try zcov_format.read(gpa, io, zcov_path);
         defer d.deinit();
-        if (d.pcs.len == 0) continue;
-        const locs = try resolver.resolveAddresses(gpa, io, d.bin_path, d.slide, d.pcs);
-        defer {
-            for (locs) |loc| if (!std.mem.eql(u8, loc.file, "<unknown>")) gpa.free(loc.file);
-            gpa.free(locs);
-        }
-        for (locs) |loc| {
+        var a = try resolver.analyze(gpa, io, d.bin_path, d.slide, d.pcs, d.counts);
+        defer a.deinit();
+        for (a.hits) |loc| {
             if (loc.line == 0) continue;
             try merged.recordHit(loc.file, loc.line);
         }
@@ -193,7 +178,7 @@ pub fn main(init: std.process.Init) !void {
     {
         var d = try zcov_format.read(gpa, io, all_zcov[0]);
         defer d.deinit();
-        var analysis = try resolver.analyze(gpa, io, d.bin_path, d.slide, d.pcs);
+        var analysis = try resolver.analyze(gpa, io, d.bin_path, d.slide, d.pcs, d.counts);
         defer analysis.deinit();
         for (analysis.coverable) |loc| {
             if (loc.line == 0) continue;
@@ -246,6 +231,7 @@ fn runSampleWithCoverage(
     io: std.Io,
     parent_env: *std.process.Environ.Map,
     zcov_dir: []const u8,
+    tag: []const u8,
 ) !void {
     // Give the sample build its OWN throwaway local cache dir so `zig build test`
     // always recompiles AND re-runs the instrumented binary. With a warm cache the
@@ -256,7 +242,9 @@ fn runSampleWithCoverage(
     // Overriding ZIG_LOCAL_CACHE_DIR to a fresh per-run dir is location-independent.
     // (ZIG_GLOBAL_CACHE_DIR is left inherited so the std lib stays cached — only
     // the project's build+run manifests are forced cold.)
-    const sample_cache = try std.fs.path.join(gpa, &.{ zcov_dir, "sample-cache" });
+    const cache_name = try std.fmt.allocPrint(gpa, "sample-cache-{s}", .{tag});
+    defer gpa.free(cache_name);
+    const sample_cache = try std.fs.path.join(gpa, &.{ zcov_dir, cache_name });
     defer gpa.free(sample_cache);
 
     // Build child environment: copy parent + set ZIG_COV_DIR and the private cache.
@@ -300,34 +288,6 @@ fn runSampleWithCoverage(
     switch (result.term) {
         .exited => |code| if (code != 0) fail("sample build exited with non-zero code"),
         else => fail("sample build terminated abnormally"),
-    }
-}
-
-/// Run an already-built instrumented binary directly (bypassing `zig build`),
-/// with ZIG_COV_DIR pointed at zcov_dir so it writes a fresh coverage-<pid>.zcov.
-fn runBinaryWithCoverage(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    parent_env: *std.process.Environ.Map,
-    bin_path: []const u8,
-    zcov_dir: []const u8,
-) !void {
-    var env = std.process.Environ.Map.init(gpa);
-    defer env.deinit();
-    var it = parent_env.iterator();
-    while (it.next()) |entry| try env.put(entry.key_ptr.*, entry.value_ptr.*);
-    try env.put("ZIG_COV_DIR", zcov_dir);
-
-    const result = try std.process.run(gpa, io, .{
-        .argv = &.{bin_path},
-        .environ_map = &env,
-    });
-    defer gpa.free(result.stdout);
-    defer gpa.free(result.stderr);
-
-    switch (result.term) {
-        .exited => |code| if (code != 0) fail("direct sample run exited with non-zero code"),
-        else => fail("direct sample run terminated abnormally"),
     }
 }
 

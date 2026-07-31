@@ -136,12 +136,12 @@ pub fn build(b: *std.Build) void {
 
 /// Apply zig-cov instrumentation to a test binary — the same three settings the
 /// README tells users to add to their own build.zig:
-///   * use_llvm: sanitize-coverage is only emitted by the LLVM backend
-///   * sanitize_coverage_trace_pc_guard: the instrumentation itself
+///   * use_llvm: coverage instrumentation is only emitted by the LLVM backend
+///   * fuzz: emits inline 8-bit counters and the PC table zig-cov reads
 ///   * link_libc: the runtime writes its .zcov from a libc atexit handler
 fn instrument(compile: *std.Build.Step.Compile, rt_path: ?[]const u8) void {
     compile.use_llvm = true;
-    compile.sanitize_coverage_trace_pc_guard = true;
+    compile.root_module.fuzz = true;
     compile.root_module.link_libc = true;
     if (rt_path) |p| compile.root_module.addObjectFile(.{ .cwd_relative = p });
 }

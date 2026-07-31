@@ -2,17 +2,23 @@
 //!
 //! Layout:
 //!   Magic:      [4]u8  = "ZCOV"
-//!   Version:    u32    = 1 (little-endian throughout)
+//!   Version:    u32    = 2 (little-endian throughout)
 //!   Slide:      i64    = ASLR slide: subtract from stored PCs to get virtual addrs
-//!   NumPCs:     u32    = number of unique hit edge PCs stored
+//!   NumPCs:     u32    = number of instrumented blocks
 //!   BinPathLen: u16    = byte length of the binary path string
 //!   BinPath:    [BinPathLen]u8
-//!   PCs:        [NumPCs]u64 = runtime PC addresses (return addresses of hit edges)
+//!   PCs:        [NumPCs]u64 = runtime address of every instrumented block
+//!   Counts:     [NumPCs]u8  = execution count per block, saturating at 255
+//!
+//! PCs covers *every* instrumented block, not just the executed ones: a block
+//! with count 0 is a real miss. Recording the whole table is what lets the
+//! reporter tell "never ran" apart from "no code here", and its entries mark
+//! block boundaries so an executed block can be expanded across its lines.
 
 const std = @import("std");
 
 pub const magic: [4]u8 = "ZCOV".*;
-pub const version: u32 = 1;
+pub const version: u32 = 2;
 
 pub const Header = extern struct {
     magic: [4]u8,
@@ -20,7 +26,8 @@ pub const Header = extern struct {
     /// ASLR slide. Subtract from each PC to obtain the virtual address as
     /// stored in DWARF debug information.
     slide: i64,
-    /// Number of PC addresses that follow after the bin_path.
+    /// Number of instrumented blocks; both the PC and count arrays have this
+    /// many entries.
     num_pcs: u32,
     /// Byte length of the binary path string.
     bin_path_len: u16,
@@ -28,6 +35,7 @@ pub const Header = extern struct {
 
 pub const WriteError = error{
     BinPathTooLong,
+    CountMismatch,
     WriteError,
 } || std.mem.Allocator.Error;
 
@@ -38,7 +46,8 @@ extern "c" fn fclose(stream: *CFile) c_int;
 extern "c" fn fwrite(ptr: *const anyopaque, size: usize, count: usize, stream: *CFile) usize;
 extern "c" fn fread(ptr: *anyopaque, size: usize, count: usize, stream: *CFile) usize;
 
-/// Write a .zcov file to `path`. `pcs` are runtime (slid) PC addresses.
+/// Write a .zcov file to `path`. `pcs` are the runtime (slid) addresses of every
+/// instrumented block and `counts` their execution counts, index for index.
 /// `slide` is the ASLR slide for the current process.
 /// `bin_path` is the absolute path to the test binary.
 /// Note: path must be null-terminated (caller provides a buf with room for sentinel).
@@ -47,8 +56,10 @@ pub fn write(
     slide: i64,
     bin_path: []const u8,
     pcs: []const u64,
+    counts: []const u8,
 ) WriteError!void {
     if (bin_path.len > std.math.maxInt(u16)) return error.BinPathTooLong;
+    if (pcs.len != counts.len) return error.CountMismatch;
 
     const file = fopen(path.ptr, "wb") orelse return error.WriteError;
     defer _ = fclose(file);
@@ -66,6 +77,8 @@ pub fn write(
         return error.WriteError;
     if (pcs.len > 0 and fwrite(pcs.ptr, @sizeOf(u64), pcs.len, file) != pcs.len)
         return error.WriteError;
+    if (counts.len > 0 and fwrite(counts.ptr, 1, counts.len, file) != counts.len)
+        return error.WriteError;
 }
 
 pub const ReadError = error{
@@ -78,13 +91,33 @@ pub const ReadError = error{
 pub const ZcovData = struct {
     slide: i64,
     bin_path: []u8,
+    /// Runtime address of every instrumented block.
     pcs: []u64,
+    /// Execution count per block, parallel to `pcs`. 0 means the block never ran.
+    counts: []u8,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *ZcovData) void {
         self.allocator.free(self.bin_path);
         self.allocator.free(self.pcs);
+        self.allocator.free(self.counts);
         self.* = undefined;
+    }
+
+    /// Addresses of the blocks that executed at least once.
+    pub fn hitPcs(self: *const ZcovData, allocator: std.mem.Allocator) ![]u64 {
+        var n: usize = 0;
+        for (self.counts) |c| if (c != 0) {
+            n += 1;
+        };
+        const out = try allocator.alloc(u64, n);
+        var i: usize = 0;
+        for (self.pcs, self.counts) |pc, c| {
+            if (c == 0) continue;
+            out[i] = pc;
+            i += 1;
+        }
+        return out;
     }
 };
 
@@ -122,10 +155,20 @@ pub fn read(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ReadErro
         };
     }
 
+    const counts = try allocator.alloc(u8, hdr.num_pcs);
+    errdefer allocator.free(counts);
+    if (counts.len > 0) {
+        fr.interface.readSliceAll(counts) catch |err| switch (err) {
+            error.EndOfStream => return error.EndOfStream,
+            else => |e| return e,
+        };
+    }
+
     return ZcovData{
         .slide = hdr.slide,
         .bin_path = bin_path,
         .pcs = pcs,
+        .counts = counts,
         .allocator = allocator,
     };
 }
@@ -133,8 +176,9 @@ pub fn read(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ReadErro
 test "zcov_format write produces valid header bytes" {
     const path: [:0]const u8 = "/tmp/zcov-unit-hdr.zcov";
     const pcs = [_]u64{ 0x1000, 0x2000, 0x3000 };
+    const counts = [_]u8{ 1, 0, 7 };
     const bin = "/usr/bin/test-bin";
-    try write(path, -256, bin, &pcs);
+    try write(path, -256, bin, &pcs, &counts);
 
     const f = fopen(path.ptr, "rb") orelse return error.TestFailed;
     defer _ = fclose(f);
@@ -150,7 +194,7 @@ test "zcov_format write produces valid header bytes" {
 
 test "zcov_format write empty pcs produces zero num_pcs in header" {
     const path: [:0]const u8 = "/tmp/zcov-unit-empty.zcov";
-    try write(path, 0, "/bin/empty", &.{});
+    try write(path, 0, "/bin/empty", &.{}, &.{});
 
     const f = fopen(path.ptr, "rb") orelse return error.TestFailed;
     defer _ = fclose(f);
@@ -168,7 +212,7 @@ test "zcov_format write returns error for bin_path exceeding u16 max" {
     @memset(too_long, 'x');
     try std.testing.expectError(
         error.BinPathTooLong,
-        write("/tmp/zcov-unit-toolong.zcov", 0, too_long, &.{}),
+        write("/tmp/zcov-unit-toolong.zcov", 0, too_long, &.{}, &.{}),
     );
 }
 
@@ -177,10 +221,11 @@ test "zcov_format round-trip: read back matches what was written" {
     const io = std.Io.Threaded.global_single_threaded.io();
     const path: [:0]const u8 = "/tmp/zcov-unit-roundtrip.zcov";
     const pcs_in = [_]u64{ 0xdeadbeef, 0xcafebabe, 0x12345678 };
+    const counts_in = [_]u8{ 3, 0, 255 };
     const bin_in = "/usr/bin/mytest";
     const slide_in: i64 = -4096;
 
-    try write(path, slide_in, bin_in, &pcs_in);
+    try write(path, slide_in, bin_in, &pcs_in, &counts_in);
 
     var data = try read(alloc, io, path);
     defer data.deinit();
@@ -243,4 +288,45 @@ test "zcov_format read returns EndOfStream on truncated file" {
     _ = fclose(f);
 
     try std.testing.expectError(error.EndOfStream, read(alloc, io, path));
+}
+
+test "zcov_format round-trip preserves per-block counts" {
+    const alloc = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const path: [:0]const u8 = "/tmp/zcov-unit-counts.zcov";
+    const pcs_in = [_]u64{ 0x10, 0x20, 0x30, 0x40 };
+    // A zero count is a real miss and must survive the round trip.
+    const counts_in = [_]u8{ 5, 0, 0, 255 };
+
+    try write(path, 0, "/bin/x", &pcs_in, &counts_in);
+    var data = try read(alloc, io, path);
+    defer data.deinit();
+
+    try std.testing.expectEqualSlices(u8, &counts_in, data.counts);
+    try std.testing.expectEqual(pcs_in.len, data.pcs.len);
+}
+
+test "zcov_format hitPcs returns only the blocks that executed" {
+    const alloc = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const path: [:0]const u8 = "/tmp/zcov-unit-hitpcs.zcov";
+    const pcs_in = [_]u64{ 0x10, 0x20, 0x30, 0x40 };
+    const counts_in = [_]u8{ 1, 0, 9, 0 };
+
+    try write(path, 0, "/bin/x", &pcs_in, &counts_in);
+    var data = try read(alloc, io, path);
+    defer data.deinit();
+
+    const hits = try data.hitPcs(alloc);
+    defer alloc.free(hits);
+    try std.testing.expectEqualSlices(u64, &.{ 0x10, 0x30 }, hits);
+}
+
+test "zcov_format write rejects mismatched pcs and counts" {
+    const pcs = [_]u64{ 1, 2 };
+    const counts = [_]u8{1};
+    try std.testing.expectError(
+        error.CountMismatch,
+        write("/tmp/zcov-unit-mismatch.zcov", 0, "/bin/x", &pcs, &counts),
+    );
 }

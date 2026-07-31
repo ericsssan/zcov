@@ -13,11 +13,13 @@ pub fn build(b: *std.Build) void {
     });
 
     if (coverage) {
-        // sanitize-coverage requires the LLVM backend. The self-hosted x86_64
-        // backend (the Debug default on Linux) silently emits no instrumentation,
-        // so force LLVM to get the trace-pc-guard callbacks.
+        // Coverage instrumentation requires the LLVM backend. The self-hosted
+        // backends emit none at all — not trace-pc-guard, and not the counters
+        // and PC table below — so it has to be forced.
         unit_tests.use_llvm = true;
-        unit_tests.sanitize_coverage_trace_pc_guard = true;
+        // Emits inline 8-bit counters plus the table of block addresses they
+        // correspond to, which is what the zig-cov runtime reads.
+        unit_tests.root_module.fuzz = true;
         // The runtime uses libc (fopen) and writes coverage from a libc atexit
         // handler. Without link_libc, builtin.link_libc is false and
         // std.process.exit() takes the raw-syscall path on Linux, so the handler

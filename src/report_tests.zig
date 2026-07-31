@@ -15,7 +15,6 @@ const html = @import("report/html.zig");
 const json = @import("report/json.zig");
 const cobertura = @import("report/cobertura.zig");
 const github = @import("report/github.zig");
-const blocks = @import("dwarf/blocks.zig");
 
 // Empty CoverageData used by the anchor tests below.
 fn emptyData(alloc: std.mem.Allocator) coverage.CoverageData {
@@ -67,13 +66,6 @@ test "anchor: cobertura.write is reachable" {
     defer buf.deinit();
     const data = emptyData(std.testing.allocator);
     try cobertura.write(std.testing.allocator, &buf.writer, &data, .{});
-}
-
-// Not a report writer, but it needs the same anchoring: its tests only run if
-// something reachable from this root references it.
-test "anchor: dwarf/blocks is reachable" {
-    const pcs = try blocks.scanCallSites(std.testing.allocator, .aarch64, &.{}, 0, 0);
-    defer std.testing.allocator.free(pcs);
 }
 
 test "anchor: github.write is reachable" {

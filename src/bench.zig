@@ -1,9 +1,9 @@
 //! Synthetic benchmarks for zig-cov.
 //!
-//! Measures three key performance paths:
-//!
-//!   bench 1 — sancov first-hit callback hot path
-//!             (atomic slot claim + PC store + guard zero)
+//! Measures the two paths zig-cov actually owns. The instrumentation hot path
+//! is not benchmarked because zig-cov has no code on it: LLVM emits an inline
+//! byte increment per block, and the runtime only reads the counters once, at
+//! process exit.
 //!
 //!   bench 2 — coverage.Builder.recordHit throughput
 //!             (1 000 files × 100 lines = 100 000 calls)
@@ -12,7 +12,6 @@
 //!             (10 000 files × 10 lines → LCOV + summary write)
 //!
 //! Performance targets (from the design doc):
-//!   sancov hot path          ≤ 5 ns / call
 //!   recordHit                ≤ 10 000 ms total for 100 K calls (generous)
 //!   LCOV write (10 K files)  ≤ 5 000 ms
 //!   summary write            ≤ 1 000 ms
@@ -26,12 +25,6 @@ const summary_report = @import("report/summary.zig");
 // Global state: keeps large arrays out of stack frames.
 // ---------------------------------------------------------------------------
 
-/// Compact hit-PC list for sancov bench (mirrors the real runtime layout).
-var g_hit_pcs: [1 << 15]u64 = @splat(0);
-
-/// Atomic hit counter (mirrors hit_count in sancov.zig).
-var g_hit_count: std.atomic.Value(u32) = .init(0);
-
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -43,7 +36,6 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("\n=== zig-cov synthetic benchmarks ===\n", .{});
     std.debug.print("(lower is better; WARN = above target)\n\n", .{});
 
-    try benchSancov(io, gpa);
     try benchCoverageModel(io, gpa);
     try benchReportGeneration(io, gpa);
 }
@@ -54,58 +46,6 @@ pub fn main(init: std.process.Init) !void {
 
 inline fn nowNs(io: std.Io) i96 {
     return std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds;
-}
-
-// ---------------------------------------------------------------------------
-// Bench 1: sancov first-hit callback hot path
-// ---------------------------------------------------------------------------
-//
-// Simulates what __sanitizer_cov_trace_pc_guard does on *first* hit:
-//   1. Read return address            (@returnAddress — 1 instr)
-//   2. Store PC to edge_pcs[id]       (array write, possible cache miss)
-//   3. Atomic OR on bitmap byte       (@atomicRmw)
-//   4. Zero the guard                 (store)
-//
-// N distinct guard values are exercised so each call is a genuine first hit.
-// The guards array is pre-allocated on the heap to avoid stack pressure.
-
-fn benchSancov(io: std.Io, gpa: std.mem.Allocator) !void {
-    const N: usize = 1_000_000;
-    const MAX_ID: u32 = @intCast(g_hit_pcs.len - 1);
-
-    const guards = try gpa.alloc(u32, N);
-    defer gpa.free(guards);
-
-    // Assign sequential IDs that wrap within the table bounds.
-    for (guards, 0..) |*g, i| g.* = @intCast((i % MAX_ID) + 1);
-
-    // Reset global state so every call is a real first hit.
-    @memset(&g_hit_pcs, 0);
-    g_hit_count.store(0, .monotonic);
-
-    const t0 = nowNs(io);
-
-    for (guards) |*guard| {
-        if (guard.* == 0) continue;
-
-        // --- hot path (mirrors sancov.zig) ---
-        const pc: u64 = @returnAddress();
-        const slot = g_hit_count.fetchAdd(1, .monotonic);
-        if (slot < g_hit_pcs.len) {
-            g_hit_pcs[slot] = pc;
-        }
-        guard.* = 0;
-    }
-
-    const t1 = nowNs(io);
-    const elapsed_ns: u64 = @intCast(t1 - t0);
-    const ns_per_call = elapsed_ns / N;
-    const pass = if (ns_per_call <= 5) "PASS" else "WARN";
-
-    std.debug.print("bench 1 — sancov first-hit hot path\n", .{});
-    std.debug.print("  {d:>10} calls\n", .{N});
-    std.debug.print("  {d:>10} ms  total\n", .{elapsed_ns / std.time.ns_per_ms});
-    std.debug.print("  {d:>10} ns/call  (target: ≤5)  [{s}]\n\n", .{ ns_per_call, pass });
 }
 
 // ---------------------------------------------------------------------------
