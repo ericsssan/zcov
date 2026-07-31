@@ -56,6 +56,11 @@ const section_end_prefix = switch (builtin.object_format) {
 /// Bounds of a section, or an empty slice when the binary was not instrumented.
 fn sectionBounds(comptime T: type, comptime name: []const u8) []T {
     if (section_start_prefix.len == 0) return &.{};
+    // ELF only synthesises __start_/__stop_ symbols for sections that exist, so
+    // referencing them at all fails to link in a binary with no instrumentation.
+    // This file's own test binary is exactly that, hence the compile-time guard;
+    // the shipped runtime object is not a test build and does reference them.
+    if (builtin.is_test) return &.{};
     const start = @extern([*]T, .{ .name = section_start_prefix ++ name, .linkage = .weak }) orelse return &.{};
     const end = @extern([*]T, .{ .name = section_end_prefix ++ name, .linkage = .weak }) orelse return &.{};
     const bytes = @intFromPtr(end) - @intFromPtr(start);
@@ -166,10 +171,10 @@ extern fn atexit(callback: *const fn () callconv(.c) void) c_int;
 // Tests
 // ---------------------------------------------------------------------------
 
-test "section bounds are empty when the binary is not instrumented" {
-    // The test binary for this file is built without coverage, so the sancov
-    // sections do not exist and the weak symbols resolve to null. The runtime
-    // must treat that as "nothing to record" rather than misbehaving.
+test "section bounds are empty without instrumentation" {
+    // In a test build the section lookup is compiled out (see sectionBounds),
+    // which is also what an uninstrumented binary looks like at runtime: the
+    // runtime must treat it as "nothing to record" rather than misbehaving.
     try std.testing.expectEqual(@as(usize, 0), counters().len);
     try std.testing.expectEqual(@as(usize, 0), blockPcs().len);
 }
