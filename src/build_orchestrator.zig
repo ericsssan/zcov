@@ -102,7 +102,11 @@ pub fn run(opts: Options) OrchestratorError!RunResult {
     try child_env.put("ZIG_LOCAL_CACHE_DIR", proj_cache);
 
     // Run the build.
-    std.debug.print("zig-cov: running: {any}\n", .{argv.items});
+    // Print the command as text. ({any} on [][]const u8 renders each argument as
+    // a list of byte values, which is unreadable.)
+    std.debug.print("zig-cov: running:", .{});
+    for (argv.items) |a| std.debug.print(" {s}", .{a});
+    std.debug.print("\n", .{});
     const result = std.process.run(allocator, io, .{
         .argv = argv.items,
         .cwd = .{ .path = opts.project_dir },
