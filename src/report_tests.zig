@@ -12,6 +12,7 @@ const coverage = @import("coverage.zig");
 const lcov = @import("report/lcov.zig");
 const summary = @import("report/summary.zig");
 const html = @import("report/html.zig");
+const json = @import("report/json.zig");
 
 // Empty CoverageData used by the anchor tests below.
 fn emptyData(alloc: std.mem.Allocator) coverage.CoverageData {
@@ -49,4 +50,11 @@ test "anchor: summary.write is reachable" {
 // (I/O-free) test blocks.
 test "anchor: report/html is reachable" {
     _ = &html.write;
+}
+
+test "anchor: json.write is reachable" {
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    const data = emptyData(std.testing.allocator);
+    try json.write(std.testing.allocator, &buf.writer, &data);
 }

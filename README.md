@@ -104,6 +104,9 @@ zig-cov test --format=lcov --output=coverage.lcov
 # Self-contained HTML report (source view with syntax highlighting)
 zig-cov test --format=html --output=coverage.html
 
+# JSON for scripting (stdout by default, so it pipes)
+zig-cov test --format=json | jq '.summary.line_percent'
+
 # Fail the build if coverage drops below a threshold
 zig-cov test --fail-under=80
 
@@ -122,8 +125,8 @@ zig-cov report --format=lcov *.zcov
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format=summary\|lcov\|html` | `summary` | Output format |
-| `--output=<path>` | stdout | Output file (summary goes to stdout; `html` defaults to `coverage.html`) |
+| `--format=summary\|lcov\|html\|json` | `summary` | Output format |
+| `--output=<path>` | stdout | Output file (summary/lcov/json go to stdout; `html` defaults to `coverage.html`) |
 | `--fail-under=<pct>` | `0` | Exit 1 if line coverage is below this percentage |
 | `--color=on\|off\|auto` | `auto` | Terminal colour in summary output |
 | `--project=<dir>` | `.` | Directory containing `build.zig` |
@@ -134,6 +137,33 @@ By default only files under `--project` are reported — the Zig standard librar
 and other out-of-tree files are hidden. Relative source paths (project-local)
 are always kept. To report everything, pass an `--include` that matches (e.g.
 `--include=.zig`); to see the std library too, `--include=/std/`.
+
+## JSON format
+
+`--format=json` emits a stable document. Files are sorted by path and lines by
+number, so output is deterministic and diffable. A line with `"hits": 0` is a
+miss; lines with no generated code are absent.
+
+```json
+{
+  "version": 1,
+  "tool": "zig-cov",
+  "summary": {
+    "lines_found": 819, "lines_hit": 301, "line_percent": 36.75,
+    "functions_found": 0, "functions_hit": 0, "function_percent": 100.00
+  },
+  "files": [
+    {
+      "path": "clap/parsers.zig",
+      "lines_found": 57, "lines_hit": 16, "line_percent": 28.07,
+      "lines": [ {"line": 12, "hits": 3}, {"line": 13, "hits": 0} ],
+      "functions": [ {"name": "parseInt", "line": 12, "hits": 3} ]
+    }
+  ]
+}
+```
+
+`version` is the schema version, bumped on any incompatible change.
 
 ## .zcov file format
 
@@ -188,10 +218,13 @@ src/
 ├── build_orchestrator.zig    Invokes zig build test with coverage flags
 ├── coverage.zig              Unified coverage data model
 ├── dwarf/
-│   └── resolver.zig          Batch PC → file:line resolver (ELF + Mach-O)
+│   └── resolver.zig          PC → file:line resolver + coverable-line
+│                             enumeration (ELF + Mach-O)
 ├── report/
 │   ├── lcov.zig              LCOV tracefile writer
-│   └── summary.zig           Terminal table writer
+│   ├── summary.zig           Terminal table writer
+│   ├── html.zig              HTML report (source view + highlighting)
+│   └── json.zig              JSON writer
 ├── runtime/
 │   ├── sancov.zig            __sanitizer_cov_trace_pc_guard callbacks
 │   └── zcov_format.zig       .zcov binary format read/write
@@ -203,7 +236,8 @@ src/
 - [x] HTML report with Zig syntax highlighting
 - [ ] Windows support (PE/COFF)
 - [ ] Branch/expression coverage via LLVM profraw (`--precise` mode)
-- [ ] Cobertura XML and JSON output
+- [x] JSON output
+- [ ] Cobertura XML output
 - [ ] GitHub Actions annotations
 - [ ] Codecov upload integration
 - [ ] Comptime/unreachable line detection

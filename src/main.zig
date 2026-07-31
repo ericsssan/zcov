@@ -6,7 +6,7 @@
 //!   zig-cov --help
 //!
 //! Options:
-//!   --format=summary|lcov|html  Output format (default: summary)
+//!   --format=summary|lcov|html|json  Output format (default: summary)
 //!   --output=<path>           Output file path (default: stdout for summary,
 //!                             coverage.html for html)
 //!   --fail-under=<pct>        Exit 1 if line coverage is below this %
@@ -26,6 +26,7 @@ const resolver = @import("dwarf/resolver.zig");
 const lcov_report = @import("report/lcov.zig");
 const summary_report = @import("report/summary.zig");
 const html_report = @import("report/html.zig");
+const json_report = @import("report/json.zig");
 const orchestrator = @import("build_orchestrator.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -76,8 +77,10 @@ fn printUsage() void {
         \\  report   Generate report from existing .zcov file(s)
         \\
         \\Options:
-        \\  --format=summary|lcov|html  Output format (default: summary)
-        \\  --output=<path>           Output file (html defaults to coverage.html)
+        \\  --format=summary|lcov|html|json
+        \\                            Output format (default: summary)
+        \\  --output=<path>           Output file (html defaults to coverage.html;
+        \\                            lcov/json go to stdout unless set)
         \\  --fail-under=<pct>        Exit 1 if line coverage below threshold
         \\  --color=on|off|auto       Terminal color (default: auto)
         \\  --project=<dir>           Project directory (default: .)
@@ -104,7 +107,7 @@ fn printUsage() void {
 // Parsed options
 // ---------------------------------------------------------------------------
 
-const Format = enum { summary, lcov, html };
+const Format = enum { summary, lcov, html, json };
 
 const Opts = struct {
     format: Format = .summary,
@@ -181,6 +184,8 @@ fn parseOpts(gpa: std.mem.Allocator, raw_args: []const []const u8) !Opts {
                 opts.format = .summary;
             } else if (std.mem.eql(u8, val, "html")) {
                 opts.format = .html;
+            } else if (std.mem.eql(u8, val, "json")) {
+                opts.format = .json;
             } else {
                 std.debug.print("zig-cov: unknown format '{s}'\n", .{val});
                 std.process.exit(1);
@@ -333,6 +338,21 @@ fn generateReport(
                 std.debug.print("zig-cov: wrote LCOV to {s}\n", .{out_path});
             } else {
                 try lcov_report.write(stdout, &cov_data);
+                try stdout.flush();
+            }
+        },
+        .json => {
+            // Like lcov: stdout unless --output, so it can be piped to jq.
+            if (opts.output) |out_path| {
+                var file = try std.Io.Dir.cwd().createFile(io, out_path, .{});
+                defer file.close(io);
+                var file_buf: [4096]u8 = undefined;
+                var file_fw = file.writer(io, &file_buf);
+                try json_report.write(gpa, &file_fw.interface, &cov_data);
+                try file_fw.interface.flush();
+                std.debug.print("zig-cov: wrote JSON to {s}\n", .{out_path});
+            } else {
+                try json_report.write(gpa, stdout, &cov_data);
                 try stdout.flush();
             }
         },
