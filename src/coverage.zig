@@ -274,6 +274,65 @@ test "Builder build produces sorted lines and correct summary" {
     try std.testing.expectEqual(@as(u32, 2), cov.summary.lines_hit);
 }
 
+test "CoverageData deinit frees owned function names" {
+    const alloc = std.testing.allocator;
+    // Mirrors what the resolver produces: function names are heap-allocated and
+    // owned by the data, so deinit must free them (the testing allocator fails
+    // the test if it does not).
+    const names = [_][]const u8{ "alpha", "beta" };
+    var funcs = try alloc.alloc(FunctionCoverage, names.len);
+    for (names, 0..) |n, i| {
+        funcs[i] = .{ .name = try alloc.dupe(u8, n), .start_line = @intCast(i + 1), .hit_count = 1 };
+    }
+    const lines = try alloc.alloc(LineCoverage, 1);
+    lines[0] = .{ .line = 1, .hit_count = 1 };
+    const files = try alloc.alloc(FileCoverage, 1);
+    files[0] = .{ .path = "owned.zig", .lines = lines, .functions = funcs };
+
+    var data = CoverageData{
+        .allocator = alloc,
+        .files = files,
+        .summary = .{ .lines_found = 1, .lines_hit = 1, .functions_found = 2, .functions_hit = 2 },
+    };
+    data.deinit();
+}
+
+test "Builder build returns an empty model when nothing was recorded" {
+    var bldr = Builder.init(std.testing.allocator);
+    defer bldr.deinit();
+
+    var cov = try bldr.build();
+    defer cov.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), cov.files.len);
+    try std.testing.expectEqual(@as(u32, 0), cov.summary.lines_found);
+    try std.testing.expectApproxEqAbs(@as(f64, 100.0), cov.summary.linePercent(), 0.001);
+}
+
+test "Builder build reports several files independently" {
+    var bldr = Builder.init(std.testing.allocator);
+    defer bldr.deinit();
+
+    try bldr.recordHit("a.zig", 1);
+    try bldr.recordCoverable("a.zig", 2);
+    try bldr.recordHit("b.zig", 7);
+
+    var cov = try bldr.build();
+    defer cov.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), cov.files.len);
+    try std.testing.expectEqual(@as(u32, 3), cov.summary.lines_found);
+    try std.testing.expectEqual(@as(u32, 2), cov.summary.lines_hit);
+    for (cov.files) |fc| {
+        if (std.mem.eql(u8, fc.path, "a.zig")) {
+            try std.testing.expectEqual(@as(usize, 2), fc.lines.len);
+        } else {
+            try std.testing.expectEqual(@as(usize, 1), fc.lines.len);
+            try std.testing.expectEqual(@as(u32, 7), fc.lines[0].line);
+        }
+    }
+}
+
 test "Summary linePercent and functionPercent" {
     const s = Summary{
         .lines_found = 10,

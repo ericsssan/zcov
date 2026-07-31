@@ -484,6 +484,102 @@ test "parse opts - extra args after --" {
     try std.testing.expectEqualStrings("-v", opts.extra_args.items[0]);
 }
 
+test "parse opts - every format value maps to its enum" {
+    const alloc = std.testing.allocator;
+    const cases = [_]struct { arg: []const u8, want: Format }{
+        .{ .arg = "--format=summary", .want = .summary },
+        .{ .arg = "--format=lcov", .want = .lcov },
+        .{ .arg = "--format=html", .want = .html },
+        .{ .arg = "--format=json", .want = .json },
+        .{ .arg = "--format=cobertura", .want = .cobertura },
+        .{ .arg = "--format=github", .want = .github },
+    };
+    for (cases) |c| {
+        var opts = try parseOpts(alloc, &.{c.arg});
+        defer opts.deinit(alloc);
+        try std.testing.expectEqual(c.want, opts.format);
+    }
+}
+
+test "parse opts - defaults" {
+    const alloc = std.testing.allocator;
+    var opts = try parseOpts(alloc, &.{});
+    defer opts.deinit(alloc);
+    try std.testing.expectEqual(Format.summary, opts.format);
+    try std.testing.expectEqual(@as(?[]const u8, null), opts.output);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), opts.fail_under, 0.001);
+    try std.testing.expect(opts.color);
+    try std.testing.expectEqualStrings(".", opts.project);
+    try std.testing.expectEqual(@as(usize, 10), opts.max_annotations);
+    try std.testing.expectEqual(@as(usize, 0), opts.include.items.len);
+    try std.testing.expectEqual(@as(usize, 0), opts.exclude.items.len);
+}
+
+test "parse opts - output, project and color" {
+    const alloc = std.testing.allocator;
+    var opts = try parseOpts(alloc, &.{ "--output=cov.lcov", "--project=/tmp/p", "--color=off" });
+    defer opts.deinit(alloc);
+    try std.testing.expectEqualStrings("cov.lcov", opts.output.?);
+    try std.testing.expectEqualStrings("/tmp/p", opts.project);
+    try std.testing.expect(!opts.color);
+
+    var on = try parseOpts(alloc, &.{"--color=on"});
+    defer on.deinit(alloc);
+    try std.testing.expect(on.color);
+}
+
+test "parse opts - max-annotations" {
+    const alloc = std.testing.allocator;
+    var opts = try parseOpts(alloc, &.{"--max-annotations=0"});
+    defer opts.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 0), opts.max_annotations);
+
+    var n = try parseOpts(alloc, &.{"--max-annotations=25"});
+    defer n.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 25), n.max_annotations);
+}
+
+test "parse opts - positional arguments are kept as extra args" {
+    const alloc = std.testing.allocator;
+    // `zig-cov report a.zcov b.zcov --format=lcov` — the files are positional.
+    var opts = try parseOpts(alloc, &.{ "a.zcov", "--format=lcov", "b.zcov" });
+    defer opts.deinit(alloc);
+    try std.testing.expectEqual(Format.lcov, opts.format);
+    try std.testing.expectEqual(@as(usize, 2), opts.extra_args.items.len);
+    try std.testing.expectEqualStrings("a.zcov", opts.extra_args.items[0]);
+    try std.testing.expectEqualStrings("b.zcov", opts.extra_args.items[1]);
+}
+
+test "parse opts - everything after -- is passed through untouched" {
+    const alloc = std.testing.allocator;
+    // Flags after `--` belong to `zig build`, not to zig-cov, so they must not
+    // be interpreted here.
+    var opts = try parseOpts(alloc, &.{ "--format=json", "--", "--format=lcov", "--summary", "all" });
+    defer opts.deinit(alloc);
+    try std.testing.expectEqual(Format.json, opts.format);
+    try std.testing.expectEqual(@as(usize, 3), opts.extra_args.items.len);
+    try std.testing.expectEqualStrings("--format=lcov", opts.extra_args.items[0]);
+    try std.testing.expectEqualStrings("--summary", opts.extra_args.items[1]);
+}
+
+test "parse opts - a full command line" {
+    const alloc = std.testing.allocator;
+    var opts = try parseOpts(alloc, &.{
+        "--format=cobertura", "--output=out.xml",  "--fail-under=42.5",
+        "--color=off",        "--project=/srv/p",  "--include=src/",
+        "--exclude=/std/",    "--max-annotations=3",
+    });
+    defer opts.deinit(alloc);
+    try std.testing.expectEqual(Format.cobertura, opts.format);
+    try std.testing.expectEqualStrings("out.xml", opts.output.?);
+    try std.testing.expectApproxEqAbs(@as(f64, 42.5), opts.fail_under, 0.001);
+    try std.testing.expect(!opts.color);
+    try std.testing.expectEqualStrings("/srv/p", opts.project);
+    try std.testing.expectEqual(@as(usize, 3), opts.max_annotations);
+    try std.testing.expectEqualStrings("src/", opts.include.items[0]);
+    try std.testing.expectEqualStrings("/std/", opts.exclude.items[0]);
+}
+
 test "parse opts - include and exclude are repeatable" {
     const alloc = std.testing.allocator;
     var opts = try parseOpts(alloc, &.{ "--include=src/", "--include=lib/", "--exclude=/std/" });

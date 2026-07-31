@@ -311,6 +311,60 @@ test "scan returns nothing when the guard is never called" {
     try std.testing.expectEqual(@as(usize, 0), pcs.len);
 }
 
+test "scanBinary yields nothing for a missing file" {
+    const alloc = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    // A report must still be produced when the binary has gone away.
+    const pcs = try scanBinary(alloc, io, "/nonexistent/zig-cov/definitely-not-here");
+    defer alloc.free(pcs);
+    try std.testing.expectEqual(@as(usize, 0), pcs.len);
+}
+
+test "scanBinary parses a real executable: our own test binary" {
+    const alloc = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = std.process.executablePath(io, &buf) catch return; // not available: skip
+    const self_path = buf[0..len];
+
+    // Exercises the real ELF/Mach-O readers on a real file. The count depends on
+    // whether this binary was itself built with coverage, so assert only that
+    // parsing succeeds and yields sane, ascending addresses.
+    const pcs = try scanBinary(alloc, io, self_path);
+    defer alloc.free(pcs);
+
+    var prev: u64 = 0;
+    for (pcs) |pc| {
+        try std.testing.expect(pc > 0);
+        try std.testing.expect(pc >= prev); // scanCallSites sorts its result
+        prev = pc;
+    }
+}
+
+test "parseObject rejects anything that is not ELF or Mach-O" {
+    try std.testing.expect(parseObject("") == null);
+    try std.testing.expect(parseObject("hi") == null);
+    try std.testing.expect(parseObject("#!/bin/sh\necho hello\n") == null);
+    // Right length, wrong magic.
+    try std.testing.expect(parseObject(&[_]u8{ 0xde, 0xad, 0xbe, 0xef, 0, 0, 0, 0 }) == null);
+}
+
+test "parseElf gives up on a truncated header instead of reading past the end" {
+    // Valid magic, nothing else — must not panic or over-read.
+    try std.testing.expect(parseObject("\x7fELF") == null);
+    var buf: [24]u8 = @splat(0);
+    @memcpy(buf[0..4], "\x7fELF");
+    try std.testing.expect(parseObject(&buf) == null);
+}
+
+test "cstr stops at the terminator and tolerates a bad offset" {
+    const table = "abc\x00def\x00";
+    try std.testing.expectEqualStrings("abc", cstr(table, 0));
+    try std.testing.expectEqualStrings("def", cstr(table, 4));
+    try std.testing.expectEqualStrings("", cstr(table, 999));
+}
+
 test "blockIndexOf locates the enclosing block" {
     const blocks = [_]BlockPc{ 100, 200, 300 };
     try std.testing.expectEqual(@as(?usize, null), blockIndexOf(&blocks, 50));
