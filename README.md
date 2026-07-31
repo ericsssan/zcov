@@ -107,6 +107,9 @@ zig-cov test --format=html --output=coverage.html
 # JSON for scripting (stdout by default, so it pipes)
 zig-cov test --format=json | jq '.summary.line_percent'
 
+# Cobertura XML (Jenkins, GitLab CI, Codecov)
+zig-cov test --format=cobertura --output=coverage.xml
+
 # Fail the build if coverage drops below a threshold
 zig-cov test --fail-under=80
 
@@ -125,8 +128,8 @@ zig-cov report --format=lcov *.zcov
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format=summary\|lcov\|html\|json` | `summary` | Output format |
-| `--output=<path>` | stdout | Output file (summary/lcov/json go to stdout; `html` defaults to `coverage.html`) |
+| `--format=summary\|lcov\|html\|json\|cobertura` | `summary` | Output format |
+| `--output=<path>` | stdout | Output file (all formats go to stdout except `html`, which defaults to `coverage.html`) |
 | `--fail-under=<pct>` | `0` | Exit 1 if line coverage is below this percentage |
 | `--color=on\|off\|auto` | `auto` | Terminal colour in summary output |
 | `--project=<dir>` | `.` | Directory containing `build.zig` |
@@ -164,6 +167,32 @@ miss; lines with no generated code are absent.
 ```
 
 `version` is the schema version, bumped on any incompatible change.
+
+## Cobertura XML
+
+`--format=cobertura` emits a `coverage-04.dtd` document for Jenkins, GitLab CI
+and Codecov. Files are grouped into `<package>` elements by directory, and
+`filename` attributes are made **relative to the project directory** (emitted as
+`<source>`) because CI platforms resolve coverage against the repository root.
+
+```xml
+<coverage line-rate="0.3675" lines-covered="301" lines-valid="819" ...>
+  <sources><source>/path/to/project</source></sources>
+  <packages>
+    <package name="clap" line-rate="0.3652" ...>
+      <classes>
+        <class name="parsers" filename="clap/parsers.zig" line-rate="0.2807" ...>
+          <methods/>
+          <lines><line number="12" hits="3"/></lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>
+```
+
+zig-cov has no branch data, so `branch-rate` and the branch counters are
+reported as zero rather than fabricated.
 
 ## .zcov file format
 
@@ -224,7 +253,8 @@ src/
 │   ├── lcov.zig              LCOV tracefile writer
 │   ├── summary.zig           Terminal table writer
 │   ├── html.zig              HTML report (source view + highlighting)
-│   └── json.zig              JSON writer
+│   ├── json.zig              JSON writer
+│   └── cobertura.zig         Cobertura XML writer
 ├── runtime/
 │   ├── sancov.zig            __sanitizer_cov_trace_pc_guard callbacks
 │   └── zcov_format.zig       .zcov binary format read/write
@@ -237,7 +267,7 @@ src/
 - [ ] Windows support (PE/COFF)
 - [ ] Branch/expression coverage via LLVM profraw (`--precise` mode)
 - [x] JSON output
-- [ ] Cobertura XML output
+- [x] Cobertura XML output
 - [ ] GitHub Actions annotations
 - [ ] Codecov upload integration
 - [ ] Comptime/unreachable line detection

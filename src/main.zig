@@ -6,7 +6,8 @@
 //!   zig-cov --help
 //!
 //! Options:
-//!   --format=summary|lcov|html|json  Output format (default: summary)
+//!   --format=summary|lcov|html|json|cobertura
+//!                             Output format (default: summary)
 //!   --output=<path>           Output file path (default: stdout for summary,
 //!                             coverage.html for html)
 //!   --fail-under=<pct>        Exit 1 if line coverage is below this %
@@ -27,6 +28,7 @@ const lcov_report = @import("report/lcov.zig");
 const summary_report = @import("report/summary.zig");
 const html_report = @import("report/html.zig");
 const json_report = @import("report/json.zig");
+const cobertura_report = @import("report/cobertura.zig");
 const orchestrator = @import("build_orchestrator.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -77,10 +79,10 @@ fn printUsage() void {
         \\  report   Generate report from existing .zcov file(s)
         \\
         \\Options:
-        \\  --format=summary|lcov|html|json
+        \\  --format=summary|lcov|html|json|cobertura
         \\                            Output format (default: summary)
         \\  --output=<path>           Output file (html defaults to coverage.html;
-        \\                            lcov/json go to stdout unless set)
+        \\                            others go to stdout unless set)
         \\  --fail-under=<pct>        Exit 1 if line coverage below threshold
         \\  --color=on|off|auto       Terminal color (default: auto)
         \\  --project=<dir>           Project directory (default: .)
@@ -107,7 +109,7 @@ fn printUsage() void {
 // Parsed options
 // ---------------------------------------------------------------------------
 
-const Format = enum { summary, lcov, html, json };
+const Format = enum { summary, lcov, html, json, cobertura };
 
 const Opts = struct {
     format: Format = .summary,
@@ -186,6 +188,8 @@ fn parseOpts(gpa: std.mem.Allocator, raw_args: []const []const u8) !Opts {
                 opts.format = .html;
             } else if (std.mem.eql(u8, val, "json")) {
                 opts.format = .json;
+            } else if (std.mem.eql(u8, val, "cobertura")) {
+                opts.format = .cobertura;
             } else {
                 std.debug.print("zig-cov: unknown format '{s}'\n", .{val});
                 std.process.exit(1);
@@ -282,11 +286,12 @@ fn generateReport(
     // Resolve the project directory to an absolute prefix for the default file
     // filter (only used when no --include is given). Best-effort: if it can't be
     // resolved, fall back to keeping everything.
-    const project_prefix: ?[:0]u8 = if (opts.include.items.len == 0)
-        (std.Io.Dir.cwd().realPathFileAlloc(io, opts.project, gpa) catch null)
-    else
-        null;
-    defer if (project_prefix) |p| gpa.free(p);
+    const project_abs: ?[:0]u8 = std.Io.Dir.cwd().realPathFileAlloc(io, opts.project, gpa) catch null;
+    defer if (project_abs) |p| gpa.free(p);
+
+    // An explicit --include replaces the default "under the project dir" rule,
+    // but the resolved project path is still used as the Cobertura source root.
+    const project_prefix: ?[]const u8 = if (opts.include.items.len == 0) project_abs else null;
 
     const filter = PathFilter{
         .project_prefix = project_prefix,
@@ -353,6 +358,26 @@ fn generateReport(
                 std.debug.print("zig-cov: wrote JSON to {s}\n", .{out_path});
             } else {
                 try json_report.write(gpa, stdout, &cov_data);
+                try stdout.flush();
+            }
+        },
+        .cobertura => {
+            // Timestamps come from the clock, so reports are not byte-identical
+            // across runs; the writer takes it as a parameter for testability.
+            const cob_opts = cobertura_report.Options{
+                .timestamp = std.Io.Timestamp.now(io, .real).toSeconds(),
+                .source_root = project_abs,
+            };
+            if (opts.output) |out_path| {
+                var file = try std.Io.Dir.cwd().createFile(io, out_path, .{});
+                defer file.close(io);
+                var file_buf: [4096]u8 = undefined;
+                var file_fw = file.writer(io, &file_buf);
+                try cobertura_report.write(gpa, &file_fw.interface, &cov_data, cob_opts);
+                try file_fw.interface.flush();
+                std.debug.print("zig-cov: wrote Cobertura XML to {s}\n", .{out_path});
+            } else {
+                try cobertura_report.write(gpa, stdout, &cov_data, cob_opts);
                 try stdout.flush();
             }
         },
