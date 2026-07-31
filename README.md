@@ -222,6 +222,28 @@ into inline annotations on the pull request diff:
   summary rather than silently discarded; pass `--max-annotations=0` for all.
 - With `--fail-under`, falling short emits an `::error::` annotation and exits 1.
 
+## Uploading to Codecov
+
+zig-cov writes the tracefile; the official uploader ships it. Coverage services
+match files by path **relative to the repository root**, which is what zig-cov
+emits (`SF:src/main.zig`, not an absolute build path), so files line up without
+any `fixes`/path-mapping configuration.
+
+```yaml
+- name: Coverage
+  run: zig-cov test --format=lcov --output=coverage.lcov
+
+- uses: codecov/codecov-action@v5
+  with:
+    files: coverage.lcov
+    token: ${{ secrets.CODECOV_TOKEN }}
+```
+
+The same tracefile works with Coveralls and anything else that reads LCOV;
+`--format=cobertura` is also accepted by Codecov if you prefer XML. Run
+`zig-cov` from the repository root (or pass `--project=<dir>`) so the paths are
+relative to the root the service expects.
+
 ## .zcov file format
 
 `.zcov` is a simple binary format written by the runtime on process exit:
@@ -278,6 +300,7 @@ src/
 │   └── resolver.zig          PC → file:line resolver + coverable-line
 │                             enumeration (ELF + Mach-O)
 ├── report/
+│   ├── paths.zig             Repo-relative path helper (shared)
 │   ├── lcov.zig              LCOV tracefile writer
 │   ├── summary.zig           Terminal table writer
 │   ├── html.zig              HTML report (source view + highlighting)
@@ -298,7 +321,7 @@ src/
 - [x] JSON output
 - [x] Cobertura XML output
 - [x] GitHub Actions annotations
-- [ ] Codecov upload integration
+- [x] Codecov upload integration
 - [ ] Comptime/unreachable line detection
 
 ## Contributing
@@ -308,4 +331,4 @@ zig build test   # run unit tests
 zig build bench  # run performance benchmarks
 ```
 
-Tracks the latest **Zig master** nightly (CI installs `master`). It was last verified against `0.17.0-dev.1464+6aff551f1` — recorded as `minimum_zig_version` in `build.zig.zon`. The project uses in-flux std/build APIs, so a future master may need a small porting pass; if `zig build` fails on a fresh master, that's expected churn, not a bug.
+Tracks the latest **Zig master** nightly (CI installs `master`). It was last verified against `0.17.0-dev.1509+bb296ab9b` — recorded as `minimum_zig_version` in `build.zig.zon`. The project uses in-flux std/build APIs, so a future master may need a small porting pass; if `zig build` fails on a fresh master, that's expected churn, not a bug.

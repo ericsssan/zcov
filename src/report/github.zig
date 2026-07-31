@@ -23,6 +23,7 @@
 
 const std = @import("std");
 const coverage = @import("../coverage.zig");
+const paths = @import("paths.zig");
 
 pub const Options = struct {
     /// Absolute path stripped from file paths so annotations attach to files in
@@ -57,7 +58,7 @@ pub fn write(
     var suppressed: usize = 0;
 
     for (sorted.items) |fc| {
-        const rel = relativize(fc.path, opts.source_root);
+        const rel = paths.relativize(fc.path, opts.source_root);
         var i: usize = 0;
         while (i < fc.lines.len) {
             if (fc.lines[i].hit_count > 0) {
@@ -118,16 +119,6 @@ pub fn write(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Strip `root` (and the following separator) so annotations attach to files in
-/// the repository rather than to absolute build paths.
-fn relativize(path: []const u8, root: ?[]const u8) []const u8 {
-    const r = root orelse return path;
-    if (r.len == 0 or !std.mem.startsWith(u8, path, r)) return path;
-    var rest = path[r.len..];
-    if (rest.len > 0 and rest[0] == '/') rest = rest[1..];
-    return if (rest.len == 0) path else rest;
-}
 
 /// Escape a workflow command property value. Mirrors `escapeProperty` in
 /// actions/toolkit: on top of the message escapes, ':' and ',' must be encoded

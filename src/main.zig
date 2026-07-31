@@ -346,16 +346,18 @@ fn generateReport(
             if (!passes) std.process.exit(1);
         },
         .lcov => {
+            // Repo-relative SF: paths, so Codecov/Coveralls can match the files.
+            const lcov_opts = lcov_report.Options{ .source_root = project_abs };
             if (opts.output) |out_path| {
-                var file = try std.Io.Dir.createFileAbsolute(io, out_path, .{});
+                var file = try std.Io.Dir.cwd().createFile(io, out_path, .{});
                 defer file.close(io);
                 var file_buf: [4096]u8 = undefined;
                 var file_fw = file.writer(io, &file_buf);
-                try lcov_report.write(&file_fw.interface, &cov_data);
+                try lcov_report.write(gpa, &file_fw.interface, &cov_data, lcov_opts);
                 try file_fw.interface.flush();
                 std.debug.print("zig-cov: wrote LCOV to {s}\n", .{out_path});
             } else {
-                try lcov_report.write(stdout, &cov_data);
+                try lcov_report.write(gpa, stdout, &cov_data, lcov_opts);
                 try stdout.flush();
             }
         },

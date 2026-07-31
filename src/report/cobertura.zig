@@ -28,6 +28,7 @@
 
 const std = @import("std");
 const coverage = @import("../coverage.zig");
+const paths = @import("paths.zig");
 
 pub const Options = struct {
     /// Unix epoch seconds for the report's `timestamp` attribute. Injected
@@ -57,7 +58,7 @@ pub fn write(
     var entries: std.ArrayList(Entry) = .empty;
     defer entries.deinit(gpa);
     for (data.files) |*fc| {
-        const rel = relativize(fc.path, opts.source_root);
+        const rel = paths.relativize(fc.path, opts.source_root);
         try entries.append(gpa, .{ .pkg = packageOf(rel), .rel = rel, .fc = fc });
     }
 
@@ -158,16 +159,6 @@ fn writeClass(writer: *std.Io.Writer, e: Entry) !void {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Strip `root` (and the following separator) from `path` when it is a prefix,
-/// so CI consumers can resolve the file against the repository root.
-fn relativize(path: []const u8, root: ?[]const u8) []const u8 {
-    const r = root orelse return path;
-    if (r.len == 0 or !std.mem.startsWith(u8, path, r)) return path;
-    var rest = path[r.len..];
-    if (rest.len > 0 and rest[0] == '/') rest = rest[1..];
-    return if (rest.len == 0) path else rest;
-}
 
 /// Directory portion of `rel`, or "." when the file sits at the root.
 fn packageOf(rel: []const u8) []const u8 {

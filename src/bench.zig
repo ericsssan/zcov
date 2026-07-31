@@ -198,7 +198,7 @@ fn benchReportGeneration(io: std.Io, gpa: std.mem.Allocator) !void {
         defer buf.deinit();
 
         const t0 = nowNs(io);
-        try lcov_report.write(&buf.writer, &cov_data);
+        try lcov_report.write(gpa, &buf.writer, &cov_data, .{});
         try buf.writer.flush();
         const t1 = nowNs(io);
 

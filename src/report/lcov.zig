@@ -7,12 +7,35 @@
 
 const std = @import("std");
 const coverage = @import("../coverage.zig");
+const paths = @import("paths.zig");
+
+pub const Options = struct {
+    /// Absolute path stripped from `SF:` records so they are repo-relative.
+    /// Codecov, Coveralls and lcov's own tooling match coverage to source by
+    /// relative path; an absolute build path matches nothing. null = as-is.
+    source_root: ?[]const u8 = null,
+};
 
 /// Write an LCOV tracefile to `writer` from `data`.
-pub fn write(writer: *std.Io.Writer, data: *const coverage.CoverageData) !void {
-    for (data.files) |fc| {
+pub fn write(
+    gpa: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    data: *const coverage.CoverageData,
+    opts: Options,
+) !void {
+    // Deterministic order: sort files by path.
+    var sorted: std.ArrayList(*const coverage.FileCoverage) = .empty;
+    defer sorted.deinit(gpa);
+    for (data.files) |*fc| try sorted.append(gpa, fc);
+    std.mem.sort(*const coverage.FileCoverage, sorted.items, {}, struct {
+        fn lt(_: void, a: *const coverage.FileCoverage, b: *const coverage.FileCoverage) bool {
+            return std.mem.lessThan(u8, a.path, b.path);
+        }
+    }.lt);
+
+    for (sorted.items) |fc| {
         try writer.writeAll("TN:\n"); // test name (empty = default)
-        try writer.print("SF:{s}\n", .{fc.path});
+        try writer.print("SF:{s}\n", .{paths.relativize(fc.path, opts.source_root)});
 
         // Function coverage (DA lines, then FN/FNDA)
         for (fc.functions) |fn_cov| {
@@ -75,7 +98,7 @@ test "lcov basic output" {
         },
     };
 
-    try write(&buf.writer, &data);
+    try write(alloc, &buf.writer, &data, .{});
 
     const out = buf.written();
     try std.testing.expect(std.mem.indexOf(u8, out, "SF:src/foo.zig") != null);
@@ -110,7 +133,7 @@ test "lcov function coverage output" {
         .summary = .{ .lines_found = 2, .lines_hit = 1, .functions_found = 2, .functions_hit = 1 },
     };
 
-    try write(&buf.writer, &data);
+    try write(alloc, &buf.writer, &data, .{});
     const out = buf.written();
 
     try std.testing.expect(std.mem.indexOf(u8, out, "FN:3,myFunc") != null);
@@ -138,7 +161,7 @@ test "lcov multiple files each get their own end_of_record" {
         .summary = .{ .lines_found = 2, .lines_hit = 1, .functions_found = 0, .functions_hit = 0 },
     };
 
-    try write(&buf.writer, &data);
+    try write(alloc, &buf.writer, &data, .{});
     const out = buf.written();
 
     try std.testing.expect(std.mem.indexOf(u8, out, "SF:src/a.zig") != null);
@@ -152,4 +175,54 @@ test "lcov multiple files each get their own end_of_record" {
         rest = rest[pos + 1 ..];
     }
     try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "lcov makes SF paths relative to the source root" {
+    const alloc = std.testing.allocator;
+    var buf = std.Io.Writer.Allocating.init(alloc);
+    defer buf.deinit();
+
+    const lines = [_]coverage.LineCoverage{.{ .line = 1, .hit_count = 1 }};
+    // DWARF yields absolute paths for some files and relative for others; the
+    // tracefile must be uniformly repo-relative or Codecov cannot match them.
+    const files = [_]coverage.FileCoverage{
+        .{ .path = "/home/u/proj/root.zig", .lines = @constCast(&lines), .functions = &.{} },
+        .{ .path = "sub/rel.zig", .lines = @constCast(&lines), .functions = &.{} },
+    };
+    const data = coverage.CoverageData{
+        .allocator = alloc,
+        .files = @constCast(&files),
+        .summary = .{ .lines_found = 2, .lines_hit = 2, .functions_found = 0, .functions_hit = 0 },
+    };
+
+    try write(alloc, &buf.writer, &data, .{ .source_root = "/home/u/proj" });
+    const out = buf.written();
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "SF:root.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "SF:sub/rel.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "SF:/home/u/proj") == null);
+}
+
+test "lcov emits files in a deterministic order" {
+    const alloc = std.testing.allocator;
+    var buf = std.Io.Writer.Allocating.init(alloc);
+    defer buf.deinit();
+
+    const lines = [_]coverage.LineCoverage{.{ .line = 1, .hit_count = 1 }};
+    const files = [_]coverage.FileCoverage{
+        .{ .path = "z.zig", .lines = @constCast(&lines), .functions = &.{} },
+        .{ .path = "a.zig", .lines = @constCast(&lines), .functions = &.{} },
+    };
+    const data = coverage.CoverageData{
+        .allocator = alloc,
+        .files = @constCast(&files),
+        .summary = .{ .lines_found = 2, .lines_hit = 2, .functions_found = 0, .functions_hit = 0 },
+    };
+
+    try write(alloc, &buf.writer, &data, .{});
+    const out = buf.written();
+
+    const a = std.mem.indexOf(u8, out, "SF:a.zig").?;
+    const z = std.mem.indexOf(u8, out, "SF:z.zig").?;
+    try std.testing.expect(a < z);
 }

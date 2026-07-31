@@ -37,7 +37,7 @@ test "anchor: lcov.write is reachable" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
     const data = emptyData(std.testing.allocator);
-    try lcov.write(&buf.writer, &data);
+    try lcov.write(std.testing.allocator, &buf.writer, &data, .{});
 }
 
 test "anchor: summary.write is reachable" {

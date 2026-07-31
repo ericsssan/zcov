@@ -7,6 +7,6 @@
     // against. Zig only errors if the local compiler is OLDER than this; a newer
     // master may introduce breaking std/build changes that need porting. Bump
     // this whenever the sources are re-verified against a newer master.
-    .minimum_zig_version = "0.17.0-dev.1464+6aff551f1",
+    .minimum_zig_version = "0.17.0-dev.1509+bb296ab9b",
     .paths = .{"."},
 }
