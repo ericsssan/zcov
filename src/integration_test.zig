@@ -24,6 +24,7 @@ const coverage_mod = @import("coverage.zig");
 const LINE_ADD: u32 = 2; // return a + b;
 const LINE_SUBTRACT: u32 = 6; // return a - b;
 const LINE_MULTIPLY: u32 = 10; // return a * b;
+const LINE_UNTAKEN: u32 = 17; // total += i; a loop body that never runs
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -201,6 +202,16 @@ pub fn main(init: std.process.Init) !void {
     check(cov_mul >= 1, "multiply must be hit in analyze coverage");
     step += 1;
     std.debug.print("PASS [{d}] analyze() enumerates coverable lines: subtract is a MISS, add={d}, multiply={d}\n", .{ step, cov_add, cov_mul });
+
+    // Step 11: a branch body that never runs must never be reported as covered.
+    // The compiler places no coverage point inside it, so without evidence the
+    // reporter has to decline the claim rather than inherit the enclosing code.
+    const untaken = cov_map.get(LINE_UNTAKEN) orelse {
+        fail("sumTo's loop body is absent — it should be a coverable miss");
+    };
+    check(untaken == 0, "a loop body that never runs must not be reported covered");
+    step += 1;
+    std.debug.print("PASS [{d}] never-executed loop body is a miss, not a false positive\n", .{step});
 
     std.debug.print("=== all {d} integration tests passed ===\n", .{step});
 }

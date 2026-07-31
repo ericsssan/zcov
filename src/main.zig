@@ -31,7 +31,6 @@ const json_report = @import("report/json.zig");
 const cobertura_report = @import("report/cobertura.zig");
 const github_report = @import("report/github.zig");
 const orchestrator = @import("build_orchestrator.zig");
-
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;

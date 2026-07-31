@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const branches = @import("../branches.zig");
 
 pub const ResolvedLocation = struct {
     /// Absolute or relative path to the source file.
@@ -165,7 +166,8 @@ pub fn analyze(
         if (translate(&info, allocator, io, vaddrOf(pc, slide))) |k| try block_keys.append(allocator, k);
     }
 
-    const hits = try expandBlocks(allocator, exec_keys.items, block_keys.items, coverable, coverable_keys.items);
+    const raw_hits = try expandBlocks(allocator, exec_keys.items, block_keys.items, coverable, coverable_keys.items);
+    const hits = try dropUnprovenBranches(allocator, io, raw_hits, blocks, counts);
     return .{ .hits = hits, .coverable = coverable, .blocks = blocks, .allocator = allocator };
 }
 
@@ -350,6 +352,94 @@ fn expandBlocks(
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+/// Withdraw covered claims that the evidence does not actually reach.
+///
+/// The compiler places coverage points where fuzzing benefits, not at every
+/// branch, so a conditional body often has none of its own and would otherwise
+/// inherit the status of the code before it — reporting a never-taken branch as
+/// covered. A line inside such a body is only claimed when a coverage point
+/// *within that body* executed. Erring towards "not covered" is deliberate: an
+/// overstated line hides untested code, an understated one merely understates.
+///
+/// Takes ownership of `hits` and returns the surviving subset.
+fn dropUnprovenBranches(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    hits: []ResolvedLocation,
+    blocks: []const ResolvedLocation,
+    counts: []const u8,
+) ![]ResolvedLocation {
+    if (blocks.len != counts.len or hits.len == 0) return hits;
+
+    // Lines carrying a coverage point that executed, per file.
+    var points = std.StringHashMap(std.ArrayList(u32)).init(allocator);
+    defer {
+        var it = points.valueIterator();
+        while (it.next()) |v| v.deinit(allocator);
+        points.deinit();
+    }
+    for (blocks, counts) |loc, count| {
+        if (count == 0 or loc.line == 0) continue;
+        const gop = try points.getOrPut(loc.file);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(allocator, loc.line);
+    }
+
+    // Conditional body spans, parsed once per file.
+    var spans = std.StringHashMap([]const branches.Span).init(allocator);
+    defer {
+        var it = spans.valueIterator();
+        while (it.next()) |v| if (v.len > 0) allocator.free(v.*);
+        spans.deinit();
+    }
+
+    var kept: std.ArrayList(ResolvedLocation) = .empty;
+    errdefer kept.deinit(allocator);
+
+    for (hits) |loc| {
+        const file_spans = blk: {
+            if (spans.get(loc.file)) |s| break :blk s;
+            // A source we cannot read or parse yields no spans, which simply
+            // means nothing is second-guessed for that file.
+            var parsed: []const branches.Span = &.{};
+            if (std.Io.Dir.cwd().readFileAllocOptions(
+                io,
+                loc.file,
+                allocator,
+                std.Io.Limit.limited(8 * 1024 * 1024),
+                .of(u8),
+                0,
+            )) |src| {
+                defer allocator.free(src);
+                parsed = branches.conditionalBodies(allocator, src) catch &.{};
+            } else |_| {}
+            spans.put(loc.file, parsed) catch {};
+            break :blk parsed;
+        };
+
+        const keep = if (branches.innermost(file_spans, loc.line)) |body| inside: {
+            const pts = points.get(loc.file) orelse break :inside false;
+            // Evidence has to come from strictly inside the body. The opening
+            // line carries the condition, and the closing line is where control
+            // merges again afterwards — both execute even when the body does
+            // not, so neither proves anything about it.
+            for (pts.items) |p| {
+                if (p > body.start_line and p < body.end_line) break :inside true;
+            }
+            break :inside false;
+        } else true;
+
+        if (keep) {
+            try kept.append(allocator, loc);
+        } else {
+            allocator.free(loc.file);
+        }
+    }
+
+    allocator.free(hits);
+    return kept.toOwnedSlice(allocator);
 }
 
 fn dupeLocations(allocator: std.mem.Allocator, locs: []const ResolvedLocation) ![]ResolvedLocation {

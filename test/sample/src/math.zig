@@ -9,3 +9,12 @@ pub fn subtract(a: i32, b: i32) i32 {
 pub fn multiply(a: i32, b: i32) i32 {
     return a * b;
 }
+
+pub fn sumTo(n: i32) i32 {
+    var total: i32 = 0;
+    var i: i32 = 0;
+    while (i < n) : (i += 1) {
+        total += i; // line 17: loop body, never runs when n == 0
+    }
+    return total;
+}
