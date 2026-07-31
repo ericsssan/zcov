@@ -1,7 +1,10 @@
 # zig-cov
 
 [![CI](https://github.com/ericsssan/zcov/actions/workflows/ci.yml/badge.svg)](https://github.com/ericsssan/zcov/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/ericsssan/zcov/branch/main/graph/badge.svg)](https://codecov.io/gh/ericsssan/zcov)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+> The coverage badge is measured by zig-cov on its own test suite.
 
 Cross-platform code coverage for Zig. One command, no external dependencies.
 
